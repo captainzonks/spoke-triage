@@ -1,7 +1,7 @@
 {
   "title": "Spoke Triage Overview",
   "uid": "spoke-triage-overview",
-  "description": "spoke-triage: findings, recurring/new templates, cost, and run health. See docs/architecture_decisions.md ADR-016 and README.md#grafana-dashboard for the datasource this dashboard expects (uid spoke-triage-postgres).",
+  "description": "spoke-triage: findings, recurring/new templates, cost, and run health. See docs/architecture_decisions.md ADR-018 and README.md#grafana-dashboard for the datasource this dashboard expects (uid spoke-triage-postgres).",
   "editable": true,
   "schemaVersion": 39,
   "version": 1,

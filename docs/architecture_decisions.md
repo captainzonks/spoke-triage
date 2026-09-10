@@ -8,15 +8,15 @@
 #              cross-referenced from spoke rather than merged into it.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-08
-# Version: 0.1.0
+# Modified: 2026-09-10
+# Version: 0.1.2
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
 # Status: Draft — awaiting approval
 # ==============================================================================
 
-## ADR-013: Collector/Analyst Egress Split
+## ADR-015: Collector/Analyst Egress Split
 
 **Decision**: Split spoke-triage into two containers along a hard egress
 boundary — `triage-collector` (no internet access, queries Loki, normalizes,
@@ -102,7 +102,7 @@ runs as root / holds `NET_ADMIN`+`NET_RAW`.
 
 ---
 
-## ADR-014: Normalization as a Redaction Mechanism, Not a Filter
+## ADR-016: Normalization as a Redaction Mechanism, Not a Filter
 
 **Decision**: Log-line normalization (spec §4) is the sole redaction
 mechanism for data crossing the collector→analyst boundary. There is no
@@ -149,7 +149,7 @@ best-effort one.
 
 ---
 
-## ADR-015: Structured Output via Forced Tool Use, Not Prompt-Instructed JSON
+## ADR-017: Structured Output via Forced Tool Use, Not Prompt-Instructed JSON
 
 **Decision**: The triage report schema is enforced via a Messages API tool
 definition with `strict: true` and `tool_choice` forcing that tool — not by
@@ -184,7 +184,7 @@ defect from spec §1.
 
 ---
 
-## ADR-016: Grafana Dashboard Provisioning Lives in spoke-triage
+## ADR-018: Grafana Dashboard Provisioning Lives in spoke-triage
 
 **Decision**: The dashboard JSON lives in `spoke-triage/grafana/dashboards/`,
 not in `spoke-monitoring`. Enabling it in `spoke-monitoring`'s Grafana

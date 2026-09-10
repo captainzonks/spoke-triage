@@ -4,10 +4,10 @@
 # Description: Sidecar that owns the network namespace shared with
 #              triage-analyst (network_mode: service:triage-egress-guard) and
 #              restricts its OUTPUT to api.anthropic.com + POSTGRES_HOST
-#              (docs/spec.md §3.2, ADR-013). No compiled app — iptables +
+#              (docs/spec.md §3.2, ADR-015). No compiled app — iptables +
 #              dig + a small POSIX shell loop.
 # Author: Matt Barham
-# Version: 0.1.0
+# Version: 0.1.2
 # ==============================================================================
 # Base Image: alpine:latest
 # Security: runs as root (NET_ADMIN + iptables require it), cap_drop ALL

@@ -10,8 +10,8 @@
 #              docs/architecture_decisions.md.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-08
-# Version: 0.1.0
+# Modified: 2026-09-10
+# Version: 0.1.2
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -70,7 +70,7 @@ order:
 ## 3. Architecture
 
 Two containers, split on the egress boundary. See
-[ADR-013](architecture_decisions.md#adr-013-collectoranalyst-egress-split)
+[ADR-015](architecture_decisions.md#adr-015-collectoranalyst-egress-split)
 for the full rationale.
 
 ### 3.1 `triage-collector` — no egress
@@ -305,7 +305,7 @@ under-classifying severity on real Spoke logs.
 2. **Grafana dashboard**, committed as JSON in this repo under
    `grafana/dashboards/`, provisioned into `spoke-monitoring`'s Grafana via a
    provisioning directory mount — see
-   [ADR-016](architecture_decisions.md#adr-016-grafana-dashboard-provisioning-lives-in-spoke-triage).
+   [ADR-018](architecture_decisions.md#adr-018-grafana-dashboard-provisioning-lives-in-spoke-triage).
    Panels: findings by severity over time, top recurring templates, new
    templates in the window, token spend and cost trend, run health history.
 
@@ -361,7 +361,11 @@ timer with jitter (`RandomizedDelaySec`).
   format, no quotes on ports/IPs.
 - `modules.yml.example` registration entry with `repo`, `ref`, `enabled`,
   `env_overrides`, `secrets_map` — mirror the monitoring module's entry.
-- ADR numbering continues from `spoke`'s highest existing ADR (ADR-012) —
-  this repo's ADRs are ADR-013+, kept in this repo's own
+- ADR numbering continues from `spoke`'s highest existing ADR at the time of
+  writing — this repo's ADRs are ADR-015+, kept in this repo's own
   `docs/architecture_decisions.md` since spoke-triage is standalone-first,
-  cross-referenced from `spoke`'s ADR log rather than merged into it.
+  cross-referenced from `spoke`'s ADR log rather than merged into it. (This
+  repo originally claimed ADR-013+, colliding with two ADRs `spoke` had
+  added to its own sequence in the meantime — see `spoke`'s own
+  `docs/module_development.md` for the convention that should prevent a
+  repeat.)

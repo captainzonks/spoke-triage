@@ -3,13 +3,13 @@
 # ==============================================================================
 # Description: Grafana file-provider config (provisioning API v1) declaring
 #              where to load spoke-triage's dashboard JSON from. Mounted into
-#              Grafana's /etc/grafana/provisioning/dashboards/ (ADR-016) —
+#              Grafana's /etc/grafana/provisioning/dashboards/ (ADR-018) —
 #              this file itself is never edited by the operator; it just
 #              points at ../dashboards/, which spoke-monitoring bind-mounts
 #              separately from this repo's checkout. See README.md#grafana-dashboard.
 # Author: Matt Barham
 # Created: 2026-09-09
-# Version: 0.1.0
+# Version: 0.1.2
 # ==============================================================================
 
 apiVersion: 1

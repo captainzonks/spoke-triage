@@ -3,7 +3,7 @@
 # entrypoint.sh - triage-egress-guard
 # ==============================================================================
 # Description: Fail-closed outbound allowlist for the netns shared with
-#              triage-analyst (docs/spec.md §3.2, ADR-013). Resolves
+#              triage-analyst (docs/spec.md §3.2, ADR-015). Resolves
 #              api.anthropic.com and POSTGRES_HOST, then restricts OUTPUT to
 #              just those destinations (+ DNS + loopback + established).
 #              Anthropic's IPs are not static, so the allowlist is rebuilt on
@@ -14,7 +14,7 @@
 #              ACCEPT.
 # Author: Matt Barham
 # Created: 2026-09-09
-# Version: 0.1.0
+# Version: 0.1.2
 # ==============================================================================
 
 set -eu

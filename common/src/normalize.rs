@@ -3,12 +3,12 @@
 // ==============================================================================
 // Description: Reduces a raw log line to a template by replacing variable
 //              substrings with typed placeholders, per docs/spec.md §4. This
-//              is the security-critical piece backing ADR-014: normalization
+//              is the security-critical piece backing ADR-016: normalization
 //              is a structural redaction mechanism, not a blocklist filter.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-10
+// Version: 0.1.2
 // ==============================================================================
 
 use regex::Regex;

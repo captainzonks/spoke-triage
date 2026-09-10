@@ -6,14 +6,14 @@
 #              --rm`), not a long-running service — no Traefik/Authentik.
 # Author: Matt Barham
 # Created: 2026-09-09
-# Version: 0.1.0
+# Version: 0.1.2
 # Host: Your Server
 # ==============================================================================
 # Component: module: triage
 # Config Sources: base.env + .env.example + modules.yml overrides → .env (generated)
 # Security: non-root (PUID:DGID) on collector/analyst, secrets via
 #           /run/secrets/, caps dropped. triage-analyst shares its netns with
-#           triage-egress-guard (docs/spec.md §3.2, ADR-013) — outbound
+#           triage-egress-guard (docs/spec.md §3.2, ADR-015) — outbound
 #           restricted to api.anthropic.com + POSTGRES_HOST by iptables rules
 #           the guard maintains; triage-egress-guard is the only container
 #           in this module running as root, and the only one with
@@ -23,7 +23,7 @@
 #   See .env.example for image paths and versions
 #   (TRIAGE_COLLECTOR_IMAGE, TRIAGE_ANALYST_IMAGE, TRIAGE_EGRESS_GUARD_IMAGE)
 # Documentation:
-#   - docs/spec.md, docs/architecture_decisions.md (ADR-013)
+#   - docs/spec.md, docs/architecture_decisions.md (ADR-015)
 # Networks:
 #   - troxy (192.168.35.0/24) - dynamic IPs; none of these containers are
 #     addressed by anything else, so no static IP is reserved
