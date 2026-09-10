@@ -9,7 +9,7 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
 Author: Matt Barham
 Created: 2026-09-09
 Modified: 2026-09-10
-Version: 0.1.2
+Version: 0.2.0
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -63,8 +63,9 @@ Only `triage-analyst` can reach the internet, and only `api.anthropic.com`.
 `triage-collector` queries Loki and writes aggregates to Postgres; it never
 talks to `triage-analyst` over the network — handoff is a shared Postgres
 table. `triage-analyst` never sees a raw log line, only normalized templates
-that are structurally incapable of carrying a secret, IP, or user identifier
-(see [Normalization](#normalization-the-redaction-claim)).
+that are structurally incapable of carrying an IP, email, UUID, absolute
+path, or long hex run, plus a best-effort filter for credential/token shapes
+beyond that (see [Normalization](#normalization-the-redaction-claim)).
 
 `triage-egress-guard` enforces this: a root sidecar with `NET_ADMIN`/`NET_RAW`
 (the *only* container in this module with either) that resolves
@@ -90,12 +91,17 @@ long hex runs, labelled PIDs, remaining numbers — with typed placeholders, in
 priority order so a generic decimal pattern can't swallow an IP octet. Two
 effects: token spend drops by roughly (lines ÷ distinct templates), and
 redaction becomes a structural property enforced by a property-based test
-suite, not by inspection or prompt instruction. `template_hash` is a SHA-256
-over `(service_name, logger, normalized_template)` — not template text alone
-— so two structurally identical lines from different services can't collapse
-and let an operator's `benign` verdict on one silently suppress an unrelated
-issue elsewhere. Details:
-[ADR-016](docs/architecture_decisions.md#adr-016-normalization-as-a-redaction-mechanism-not-a-filter).
+suite, not by inspection or prompt instruction, for the shapes above. A
+second, best-effort pass layered on top catches credential/token shapes
+(labeled fields like `password=`, known key prefixes like `AKIA`/`ghp_`,
+long base64 runs) that don't fit a fixed structural shape — a narrower
+guarantee than the structural patterns, tracked explicitly as such.
+`template_hash` is a SHA-256 over `(service_name, logger,
+normalized_template)` — not template text alone — so two structurally
+identical lines from different services can't collapse and let an
+operator's `benign` verdict on one silently suppress an unrelated issue
+elsewhere. Details:
+[ADR-016](docs/architecture_decisions.md#adr-016-structural-redaction-as-the-primary-mechanism-with-a-best-effort-credential-filter-layered-on).
 
 ### Structured output
 

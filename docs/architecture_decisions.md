@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-10
-# Version: 0.1.2
+# Version: 0.2.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -102,50 +102,82 @@ runs as root / holds `NET_ADMIN`+`NET_RAW`.
 
 ---
 
-## ADR-016: Normalization as a Redaction Mechanism, Not a Filter
+## ADR-016: Structural Redaction as the Primary Mechanism, With a Best-Effort Credential Filter Layered On
 
-**Decision**: Log-line normalization (spec §4) is the sole redaction
-mechanism for data crossing the collector→analyst boundary. There is no
-separate secondary redaction/filter pass on top of it.
+**Decision**: Log-line normalization (spec §4, patterns 1–11) remains the
+primary redaction mechanism for data crossing the collector→analyst
+boundary, and is a whitelist by construction. A second, narrower pass
+(spec §4, patterns 12–14: labeled credential fields, known credential ID
+prefixes, long base64-alphabet runs) is layered on top specifically to
+catch credential/token shapes, which are not a variable *shape* the
+whitelist alphabet models — they're free-form alphabetic entropy that
+survives normalization's digit/structure-only passes untouched.
 
-**Context**: The obvious alternative — send raw or lightly-redacted log
-lines and run a regex/filter pass to strip anything that looks like a
-secret — was considered and rejected. A filter is a blocklist: it catches
-patterns you thought to write a rule for, and silently passes anything you
-didn't. Given the open-ended nature of what applications can log, a
-blocklist approach cannot provide a real security guarantee, only a
-best-effort one.
+**Context**: This ADR originally claimed normalization was the *sole*
+redaction mechanism, with no secondary filter, on the reasoning below
+(kept, because it's still correct for what it covers). An external review
+of this repo demonstrated that claim was stronger than the implementation:
+`password=hunter2SuperSecret`, an AWS access key, an Anthropic API key, and
+a GitHub PAT all survived `normalize()` with only their digits replaced —
+the alphabetic characters carrying the actual secret passed straight
+through. Two fixes were considered:
 
-**Rationale**:
-- Normalization is a whitelist by construction: the output alphabet is
-  `<TIMESTAMP>`, `<UUID>`, `<IPV4>`, `<IPV6>`, `<MAC>`, `<EMAIL>`, `<URL>`,
-  `<PATH>`, `<HEX>`, `<PID>`, `<NUM>`, and literal template text. Nothing
-  outside that alphabet can appear in a template, so there's no category of
-  secret shape that slips through by omission the way a blocklist rule
-  would.
-- The redaction property becomes testable and enforceable (spec §8) rather
-  than a matter of ongoing regex maintenance and inspection.
-- It composes with the cost-optimization requirement (spec §1.1) instead of
-  competing with it — the same normalization pass that redacts is the pass
-  that enables aggregation.
+- **(a) — chosen**: add curated credential-shape patterns (labeled fields
+  like `password=`/`token=`, known prefixes like `AKIA`/`ghp_`/`sk-ant-`,
+  and long base64-alphabet runs for unlabeled/unprefixed secrets like a
+  Basic-auth value). This is honestly a blocklist for this one layer —
+  the trade this ADR's original argument said not to make — but it's
+  cheap, testable, and closes the demonstrated leaks.
+- **(b) — measured, rejected**: replace any sufficiently long run mixing
+  character classes (letters+digits) with `<TOKEN>`, regardless of shape,
+  closer to a real structural guarantee. Measured against this repo's
+  golden corpus (`common/tests/golden_normalize.rs`, six real services)
+  plus a broader probe of realistic non-secret identifiers: it left the
+  8-line golden corpus untouched, but consumed `traefik_v3.1.2`,
+  `container=authentik-worker-1`, and `worker-pool-3a` whole, destroying
+  the service-identifying text an analyst needs to triage the finding.
+  Rejected on that measured evidence, not a guess.
+
+**Rationale** (original, still applies to patterns 1–11):
+- Normalization is a whitelist by construction for the shapes it models:
+  the output alphabet is `<TIMESTAMP>`, `<UUID>`, `<IPV4>`, `<IPV6>`,
+  `<MAC>`, `<EMAIL>`, `<URL>`, `<PATH>`, `<HEX>`, `<PID>`, `<NUM>`, and
+  literal template text. Nothing outside that alphabet can appear in a
+  template for those shapes.
+- The redaction property for patterns 1–11 is testable and enforceable
+  (spec §8) rather than a matter of ongoing regex maintenance.
+- It composes with the cost-optimization requirement (spec §1.1) instead
+  of competing with it — the same normalization pass that redacts is the
+  pass that enables aggregation.
 - Verbatim exemplar lines are still retained, but **locally in Postgres
   only**, never sent to the API — satisfying the evidence-rule requirement
   (spec §7) that findings be traceable to real log content, without ever
   putting that raw content in an outbound request.
 
 **Consequences**:
-- Normalization pattern coverage (§4's ordered list) becomes a
-  security-relevant surface — a new variable-substring pattern that should
-  be redacted but isn't yet caught (e.g. a new secret-key format Spoke
-  starts using) requires updating the normalizer, not just adding a filter
-  rule. This is a real maintenance cost, offset by being caught in code
-  review and tested against, rather than silently degrading.
-- Templates that differ only in a value the normalizer doesn't yet
-  recognize as variable (e.g. a service-specific ID format) will
-  under-aggregate rather than over-redact — the failure mode leans toward
-  more distinct templates (higher cost, same safety) rather than a leaked
-  value (lower cost, broken safety). This is the correct direction to fail
-  in.
+- Normalization pattern coverage (§4's ordered list, patterns 1–11)
+  remains a security-relevant surface — a new variable-substring pattern
+  that should be redacted but isn't yet caught requires updating the
+  normalizer, not just adding a filter rule.
+- The credential layer (patterns 12–14) is explicitly a best-effort
+  blocklist, not a structural guarantee: a credential shape not yet
+  enumerated (a new provider's key format, an unlabeled non-base64 secret)
+  can still survive. ADR-013's threat model names "credentials leaked into
+  error messages, session tokens" as the first thing the egress split
+  exists to contain — this layer narrows that exposure but does not close
+  it to zero the way patterns 1–11 close IP/email/UUID/path leakage.
+  `common/src/normalize.rs`'s property tests assert the specific shapes
+  this layer is known to catch; they are not, and cannot be, a proof of
+  completeness.
+- Templates that differ only in a value neither pass recognizes as
+  variable (e.g. a service-specific ID format) will under-aggregate rather
+  than over-redact — the failure mode leans toward more distinct templates
+  (higher cost, same safety) rather than a leaked value (lower cost,
+  broken safety). This is the correct direction to fail in, and is why
+  option (b) above was rejected: it would have inverted this trade for the
+  credential layer, over-redacting into safety at the cost of triage
+  usefulness, for a benefit the golden-corpus measurement didn't show was
+  needed.
 
 ---
 
