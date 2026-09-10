@@ -9,7 +9,7 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
 Author: Matt Barham
 Created: 2026-09-09
 Modified: 2026-09-10
-Version: 0.2.0
+Version: 0.3.0
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -325,7 +325,7 @@ with that exact uid must exist before the dashboard renders.
 ## References
 
 - [`docs/spec.md`](docs/spec.md) — full design spec
-- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-015 through ADR-018
+- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-015 through ADR-019
 - [Anthropic Messages API](https://docs.claude.com/en/api/messages)
 - [SQLx](https://docs.rs/sqlx/latest/sqlx/)
 

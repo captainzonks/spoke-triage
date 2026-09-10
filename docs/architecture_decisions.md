@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-10
-# Version: 0.2.0
+# Version: 0.3.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -253,3 +253,54 @@ rather than silently exceeding the stated scope.
   `spoke-monitoring` deprecation/registration note.
 - Establishes the pattern other future modules should follow for their own
   Grafana dashboards — worth getting right here since it's precedent-setting.
+
+---
+
+## ADR-019: Test-Only CI, No Deploy CI
+
+**Decision**: Add a GitHub Actions workflow (`.github/workflows/ci.yml`)
+that runs `cargo test --workspace` and `cargo clippy --workspace
+--all-targets -- -D warnings` on every push to `main` and every PR.
+`cargo fmt --check` is deliberately not included yet — this repo has
+pre-existing formatting drift across most files, unrelated to this
+change, and turning that check on now would make CI red from the first
+run for a reason unrelated to what anyone actually broke. Add it once a
+separate whole-repo `cargo fmt` pass lands.
+
+**Context**: Spoke's own position is "no CI" — a build-and-deploy runner
+on a single node would need the Docker socket access the socket-proxy
+architecture exists to deny, and a runner cannot restart the stack it
+lives inside. That reasoning is sound, but it's an argument about
+*deployment*, not about running a test suite. An external review of this
+repo demonstrated the gap concretely: `analyst/src/main.rs`'s test helper
+fell out of sync with `config::Config` (a field was added to the struct
+but not to the test fixture), `cargo build` stayed green because it
+doesn't compile tests, and `cargo test --workspace` had been silently
+broken since the field was added — with no signal until someone ran it
+by hand (see the fix for this in this repo's history, same review round
+as this ADR).
+
+**Rationale**:
+- A test-only job needs no Docker socket, no host access, and deploys
+  nothing — it is not the circular case ("the runner needs the thing it
+  would be validating") the original no-CI decision rejected.
+- This is exactly the failure mode a test-only gate catches: production
+  code changes, a test fixture doesn't, and nothing notices until a human
+  happens to run the full suite. GitHub Actions runners are ephemeral and
+  have no access to this deployment's secrets, network, or Docker socket
+  by construction — there's no new attack surface to reason about.
+- Sharpens the existing position rather than reversing it: "no CI" becomes
+  "CI that deploys, no; CI that tests, yes" — a more precise decision, not
+  a different one.
+
+**Consequences**:
+- `cargo clippy -- -D warnings` makes a clippy warning a CI failure, not
+  just a local nit — new code must stay clippy-clean, matching what this
+  review round already brought the repo to.
+- `cargo fmt --check` is explicitly deferred, not silently dropped: the
+  repo is not currently `cargo fmt`-clean, and reformatting the whole
+  repo is out of scope for this change. Track it as follow-up work rather
+  than assuming this ADR covers it.
+- A red CI run now means a real regression, not a deploy-environment
+  quirk — the job runs on GitHub's generic runners with no dependency on
+  this specific server or its state.
