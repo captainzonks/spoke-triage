@@ -1,0 +1,88 @@
+# ==============================================================================
+# SPOKE-TRIAGE - MODULE MANIFEST
+# ==============================================================================
+# Description: Spoke module manifest for spoke-triage, the Rust replacement
+#              for spoke_log_analysis.sh's AI-triaged log analysis
+#              (docs/spec.md). Two containers, no web UI, no Traefik/Authentik
+#              — a systemd-timer-driven batch job, not a long-running service.
+# Version: 0.1.0
+# ==============================================================================
+
+name: triage
+version: "0.1.0"
+description: "AI-triaged Loki log analysis: aggregate, classify, report, track cost"
+
+############################  REQUIREMENTS
+
+requires:
+  hub_services:
+    - postgres-hub
+
+############################  HUB POSTGRES
+
+hub_postgres:
+  admin_user: postgres
+  databases:
+    - name: triage
+      owner: triage_app
+  users:
+    - name: triage_app
+      password_secret: triage_app_psql_password
+      grants:
+        - triage
+
+############################  ENVIRONMENT
+
+env:
+  hub:
+    - TZ
+    - DOMAIN
+    - SPOKE_DIR
+    - SECRETS_DIR
+    - APPDATA_DIR
+    - PUID
+    - DGID
+    - LOCALTIME
+    - CA_CERT
+    - SSL_CERT_FILE
+    - REQUESTS_CA_BUNDLE
+    - CURL_CA_BUNDLE
+    - POSTGRES_HOST
+    - POSTGRES_PORT
+    - INSTANCE_NAME
+
+  module:
+    - TRIAGE_COLLECTOR_IMAGE
+    - TRIAGE_COLLECTOR_TAG
+    - TRIAGE_ANALYST_IMAGE
+    - TRIAGE_ANALYST_TAG
+    - TRIAGE_EGRESS_GUARD_IMAGE
+    - TRIAGE_EGRESS_GUARD_TAG
+    - TRIAGE_POSTGRES_DB
+    - TRIAGE_LOKI_BASE_URL
+    - TRIAGE_LOKI_TENANT_ID
+    - TRIAGE_LOOKBACK_HOURS
+    - TRIAGE_EXEMPLAR_LIMIT
+    - TRIAGE_MODEL
+    - TRIAGE_MONTHLY_BUDGET_USD
+    - TRIAGE_MAX_TOKENS
+    - TRIAGE_KNOWN_PATTERNS_PATH
+    - TRIAGE_EGRESS_ANTHROPIC_HOST
+    - TRIAGE_EGRESS_REFRESH_SECONDS
+    - TRIAGE_MAIL_RELAY_HOST
+    - TRIAGE_MAIL_RELAY_PORT
+    - TRIAGE_MAIL_TO
+    - RUST_LOG
+
+############################  SECRETS
+
+secrets:
+  - name: triage_app_psql_password
+    path: triage/triage_app_psql_password
+    required: true
+    description: "PostgreSQL password for triage_app user"
+
+  - name: anthropic_api_key
+    path: triage/anthropic_api_key
+    required: true
+    description: "Anthropic API key — triage-analyst only, never mounted into triage-collector"

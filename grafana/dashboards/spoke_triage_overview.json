@@ -1,0 +1,133 @@
+{
+  "title": "Spoke Triage Overview",
+  "uid": "spoke-triage-overview",
+  "description": "spoke-triage: findings, recurring/new templates, cost, and run health. See docs/architecture_decisions.md ADR-016 and README.md#grafana-dashboard for the datasource this dashboard expects (uid spoke-triage-postgres).",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["spoke-triage"],
+  "timezone": "",
+  "refresh": "1h",
+  "time": { "from": "now-30d", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Findings by severity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "CRITICAL" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "HIGH" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "MEDIUM" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "LOW" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
+          { "matcher": { "id": "byName", "options": "INFO" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT date_trunc('day', r.started_at) AS \"time\", f.severity AS metric, count(*) AS value FROM finding f JOIN run r ON r.id = f.run_id WHERE $__timeFilter(r.started_at) GROUP BY 1, 2 ORDER BY 1",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Token spend & cost trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "cost_usd" }, "properties": [
+            { "id": "unit", "value": "currencyUSD" },
+            { "id": "custom.axisPlacement", "value": "right" }
+          ] },
+          { "matcher": { "id": "byName", "options": "total_tokens" }, "properties": [
+            { "id": "unit", "value": "short" }
+          ] }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT date_trunc('day', created_at) AS \"time\", 'cost_usd' AS metric, sum(estimated_cost_usd) AS value FROM api_call WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT date_trunc('day', created_at) AS \"time\", 'total_tokens' AS metric, sum(input_tokens + output_tokens + cache_write_tokens + cache_read_tokens) AS value FROM api_call WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Top recurring templates",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT service_name, logger, left(template_text, 120) AS template, total_count, last_seen FROM log_template WHERE $__timeFilter(last_seen) ORDER BY total_count DESC LIMIT 20",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "New templates in window",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT service_name, logger, left(template_text, 120) AS template, first_seen FROM log_template WHERE $__timeFilter(first_seen) ORDER BY first_seen DESC LIMIT 50",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Run health history",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 25 },
+      "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+      "fieldConfig": {
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "health_verdict" }, "properties": [
+            { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+            { "id": "mappings", "value": [
+              { "type": "value", "options": { "CRITICAL": { "color": "red" }, "HIGH": { "color": "orange" }, "MEDIUM": { "color": "yellow" }, "LOW": { "color": "blue" }, "INFO": { "color": "green" } } }
+            ] }
+          ] }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "spoke-triage-postgres" },
+          "rawSql": "SELECT started_at AS \"time\", status, health_verdict, total_events, summary FROM run WHERE $__timeFilter(started_at) ORDER BY started_at DESC",
+          "rawQuery": true
+        }
+      ]
+    }
+  ]
+}

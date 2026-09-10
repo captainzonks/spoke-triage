@@ -1,0 +1,25 @@
+# ==============================================================================
+# SPOKE-TRIAGE - SYSTEMD TIMER
+# ==============================================================================
+# Description: systemd user timer — runs spoke_triage.service daily
+# Author: Matt Barham
+# Created: 2026-09-09
+# Version: 0.1.0
+# Host: Your Server
+# ==============================================================================
+# Type: systemd unit (timer)
+# Component: spoke-triage / maintenance
+# ==============================================================================
+
+[Unit]
+Description=Spoke Triage Daily Timer
+
+[Timer]
+# Run daily at 6:00 AM — after the default 24h TRIAGE_LOOKBACK_HOURS window
+# has accumulated a full day of logs.
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

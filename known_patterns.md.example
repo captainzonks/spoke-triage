@@ -1,0 +1,46 @@
+# Known Patterns - spoke-triage
+# ==============================================================================
+# Institutional knowledge folded into triage-analyst's cached system prompt
+# (docs/spec.md §6.1, §9) — NOT parsed into `verdict` rows at migration time.
+# Computing a `verdict.template_hash` requires an actually-observed
+# (service_name, logger, normalized_template) tuple; this file is prose
+# read by the model, not a suppression list. To suppress a specific
+# template outright, use `triage-cli verdict set <hash> benign` instead —
+# that goes in the database and is excluded from the API call entirely
+# (cheaper than asking the model to recognize it every run).
+#
+# Copy this file to `known_patterns.md` (gitignored, site-specific) and
+# customize for your instance. triage-analyst loads it automatically if
+# present at TRIAGE_KNOWN_PATTERNS_PATH; a missing file just means an
+# unaugmented (still fully functional) system prompt.
+#
+# Format: one `## heading` per pattern, prose underneath describing when
+# it's benign vs. when it's genuinely concerning. Be specific about literal
+# log text to expect — the model is instructed to quote evidence, not infer.
+# ==============================================================================
+
+## Example: Service WebSocket Reconnection (LOW/INFO)
+Some services maintain persistent WebSocket connections that periodically
+cycle. This produces warning-level "close" and "broken pipe" log entries.
+These are normal if the service reconnects successfully afterward. Only
+escalate if reconnection fails or downstream services are affected.
+
+## Example: Database Client Disconnects During Restarts (contextual)
+When a database is intentionally restarted, client containers will log
+FATAL connection errors. These are expected during maintenance windows.
+Only flag as CRITICAL if they persist beyond a few minutes.
+
+## Example: Log Shipper Old Sample Rejection (LOW)
+If the log shipper (Alloy/Promtail) was offline, it may try to ship stale
+logs that exceed the retention window. The log store rejects them. This is
+a one-time catch-up event, not ongoing data loss.
+
+## Anti-Hallucination: Framework "signals" Are Not Unix Signals
+Django (and some other frameworks) use the word "signals" for a pub/sub
+decorator pattern. Log lines like "Imported related module X.signals" or
+loggers named "*.signals" are framework code, NOT Unix process signals. Do
+NOT report SIGINT/SIGTERM/SIGKILL events based on these lines. A genuine
+process-signal event will contain the uppercase signal name, "Received
+signal N", "forwarding signal", an OOM keyword ("Out of memory: Killed
+process", "oom-killer"), or a worker-lifecycle line ("Shutting down",
+"Stopping worker", "Worker stopped").

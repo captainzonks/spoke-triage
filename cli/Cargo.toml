@@ -1,0 +1,16 @@
+[package]
+name = "spoke-triage-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "triage-cli"
+path = "src/main.rs"
+
+[dependencies]
+spoke-triage-common = { path = "../common" }
+tokio.workspace = true
+sqlx.workspace = true
+anyhow.workspace = true

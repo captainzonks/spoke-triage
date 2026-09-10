@@ -1,0 +1,275 @@
+# ==============================================================================
+# TRIAGE MODULE - DOCKER COMPOSE
+# ==============================================================================
+# Description: AI-triaged Loki log analysis — aggregate, classify, report,
+#              track cost. Batch job (systemd timer via `docker compose run
+#              --rm`), not a long-running service — no Traefik/Authentik.
+# Author: Matt Barham
+# Created: 2026-09-09
+# Version: 0.1.0
+# Host: Your Server
+# ==============================================================================
+# Component: module: triage
+# Config Sources: base.env + .env.example + modules.yml overrides → .env (generated)
+# Security: non-root (PUID:DGID) on collector/analyst, secrets via
+#           /run/secrets/, caps dropped. triage-analyst shares its netns with
+#           triage-egress-guard (docs/spec.md §3.2, ADR-013) — outbound
+#           restricted to api.anthropic.com + POSTGRES_HOST by iptables rules
+#           the guard maintains; triage-egress-guard is the only container
+#           in this module running as root, and the only one with
+#           NET_ADMIN/NET_RAW.
+# ==============================================================================
+# Container Images:
+#   See .env.example for image paths and versions
+#   (TRIAGE_COLLECTOR_IMAGE, TRIAGE_ANALYST_IMAGE, TRIAGE_EGRESS_GUARD_IMAGE)
+# Documentation:
+#   - docs/spec.md, docs/architecture_decisions.md (ADR-013)
+# Networks:
+#   - troxy (192.168.35.0/24) - dynamic IPs; none of these containers are
+#     addressed by anything else, so no static IP is reserved
+# Dependencies:
+#   - Hub: postgres-hub (shared database)
+#   - Module: Loki (log source, read-only query_range)
+# External Integrations:
+#   - [x] Hub postgres-hub (shared database)
+#   - [x] Anthropic Messages API (triage-analyst only, egress-guarded)
+#   - [ ] Traefik routing (not applicable — batch job, no HTTP surface)
+#   - [ ] Authentik forward auth (not applicable)
+# ==============================================================================
+
+name: spoke-triage
+
+############################ EXTENSIONS
+
+x-ssl: &ssl
+  environment:
+    - SSL_CERT_FILE=${SSL_CERT_FILE}
+    - REQUESTS_CA_BUNDLE=${REQUESTS_CA_BUNDLE}
+    - CURL_CA_BUNDLE=${CURL_CA_BUNDLE}
+
+  volumes:
+    - ${CA_CERT}:/etc/ssl/certs/ca-certificates.crt:ro
+
+x-logging-small: &log_small
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "2"
+
+############################ NETWORKS
+
+networks:
+  troxy:
+    external: true
+
+############################# SECRETS
+
+secrets:
+  triage_app_psql_password:
+    file: ${SECRETS_DIR}/triage/triage_app_psql_password
+  anthropic_api_key:
+    file: ${SECRETS_DIR}/triage/anthropic_api_key
+
+############################# SERVICES
+
+services:
+  #======================================
+  # TRIAGE-EGRESS-GUARD - fail-closed outbound allowlist sidecar
+  #======================================
+  triage-egress-guard:
+    <<: *log_small
+    image: ${TRIAGE_EGRESS_GUARD_IMAGE}
+    build:
+      context: ./dockerfiles/triage-egress-guard/
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VCS_REF: ${VCS_REF:-main}
+        VERSION: ${TRIAGE_EGRESS_GUARD_TAG}
+      x-bake:
+        tags:
+          - triage-egress-guard:${TRIAGE_EGRESS_GUARD_TAG}
+
+    hostname: triage-egress-guard
+    container_name: triage-egress-guard
+    restart: "no"
+    init: true
+
+    security_opt:
+      - no-new-privileges=true
+    mem_limit: 64M
+    cpus: 0.25
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    networks:
+      - troxy
+
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/rules-applied"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - TRIAGE_EGRESS_ANTHROPIC_HOST=${TRIAGE_EGRESS_ANTHROPIC_HOST}
+      - TRIAGE_EGRESS_REFRESH_SECONDS=${TRIAGE_EGRESS_REFRESH_SECONDS}
+      - TRIAGE_MAIL_RELAY_HOST=${TRIAGE_MAIL_RELAY_HOST}
+      - TRIAGE_MAIL_RELAY_PORT=${TRIAGE_MAIL_RELAY_PORT}
+
+    tmpfs:
+      - /tmp/:rw,size=8m
+
+  #======================================
+  # TRIAGE-COLLECTOR - no egress; queries Loki, normalizes, aggregates
+  #======================================
+  triage-collector:
+    <<: [*ssl, *log_small]
+    image: ${TRIAGE_COLLECTOR_IMAGE}
+    build:
+      context: .
+      dockerfile: ./dockerfiles/triage-collector/Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VCS_REF: ${VCS_REF:-main}
+        VERSION: ${TRIAGE_COLLECTOR_TAG}
+        USER_ID: ${PUID}
+        GROUP_ID: ${DGID}
+      x-bake:
+        tags:
+          - triage-collector:${TRIAGE_COLLECTOR_TAG}
+
+    hostname: triage-collector
+    container_name: triage-collector
+    restart: "no"
+    init: true
+
+    security_opt:
+      - no-new-privileges=true
+    mem_limit: 256M
+    cpus: 1.0
+    cap_drop:
+      - ALL
+    read_only: true
+    user: ${PUID}:${DGID}
+
+    networks:
+      - troxy
+
+    environment:
+      - TZ=${TZ}
+
+      # Database connection (hub postgres-hub)
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - TRIAGE_POSTGRES_DB=${TRIAGE_POSTGRES_DB}
+      - TRIAGE_APP_PSQL_PASSWORD_FILE=/run/secrets/triage_app_psql_password
+
+      # Loki
+      - TRIAGE_LOKI_BASE_URL=${TRIAGE_LOKI_BASE_URL}
+      - TRIAGE_LOKI_TENANT_ID=${TRIAGE_LOKI_TENANT_ID}
+      - TRIAGE_LOOKBACK_HOURS=${TRIAGE_LOOKBACK_HOURS}
+      - TRIAGE_EXEMPLAR_LIMIT=${TRIAGE_EXEMPLAR_LIMIT}
+
+      # Logging
+      - RUST_LOG=${RUST_LOG}
+      - RUST_BACKTRACE=1
+
+    volumes:
+      - ${LOCALTIME}:/etc/localtime:ro
+
+    tmpfs:
+      - /tmp/:rw,size=32m
+
+    secrets:
+      - triage_app_psql_password
+
+  #======================================
+  # TRIAGE-ANALYST - only container with egress; calls Anthropic
+  #======================================
+  triage-analyst:
+    <<: [*ssl, *log_small]
+    image: ${TRIAGE_ANALYST_IMAGE}
+    build:
+      context: .
+      dockerfile: ./dockerfiles/triage-analyst/Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE}
+        VCS_REF: ${VCS_REF:-main}
+        VERSION: ${TRIAGE_ANALYST_TAG}
+        USER_ID: ${PUID}
+        GROUP_ID: ${DGID}
+      x-bake:
+        tags:
+          - triage-analyst:${TRIAGE_ANALYST_TAG}
+
+    container_name: triage-analyst
+    restart: "no"
+    init: true
+
+    depends_on:
+      triage-egress-guard:
+        condition: service_healthy
+
+    # Shares triage-egress-guard's network namespace so the guard's iptables
+    # OUTPUT rules apply to this container's traffic too — this service has
+    # no `networks:` entry of its own (mutually exclusive with network_mode),
+    # and no `hostname:` either (also mutually exclusive with network_mode:
+    # service/container — Docker errors "conflicting options: hostname and
+    # the network mode" otherwise). Hostname inside the shared netns comes
+    # from triage-egress-guard, which does set one.
+    network_mode: "service:triage-egress-guard"
+
+    security_opt:
+      - no-new-privileges=true
+    mem_limit: 256M
+    cpus: 1.0
+    cap_drop:
+      - ALL
+    read_only: true
+    user: ${PUID}:${DGID}
+
+    environment:
+      - TZ=${TZ}
+
+      # Database connection (hub postgres-hub)
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - TRIAGE_POSTGRES_DB=${TRIAGE_POSTGRES_DB}
+      - TRIAGE_APP_PSQL_PASSWORD_FILE=/run/secrets/triage_app_psql_password
+
+      # Anthropic
+      - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+      - TRIAGE_MODEL=${TRIAGE_MODEL}
+      - TRIAGE_MONTHLY_BUDGET_USD=${TRIAGE_MONTHLY_BUDGET_USD}
+      - TRIAGE_MAX_TOKENS=${TRIAGE_MAX_TOKENS}
+      - TRIAGE_KNOWN_PATTERNS_PATH=${TRIAGE_KNOWN_PATTERNS_PATH}
+
+      # Reporting
+      - INSTANCE_NAME=${INSTANCE_NAME}
+      - TRIAGE_LOOKBACK_HOURS=${TRIAGE_LOOKBACK_HOURS}
+      - TRIAGE_MAIL_RELAY_HOST=${TRIAGE_MAIL_RELAY_HOST}
+      - TRIAGE_MAIL_RELAY_PORT=${TRIAGE_MAIL_RELAY_PORT}
+      - TRIAGE_MAIL_TO=${TRIAGE_MAIL_TO}
+
+      # Logging
+      - RUST_LOG=${RUST_LOG}
+      - RUST_BACKTRACE=1
+
+    volumes:
+      - ${LOCALTIME}:/etc/localtime:ro
+      - ./known_patterns.md:${TRIAGE_KNOWN_PATTERNS_PATH}:ro
+
+    tmpfs:
+      - /tmp/:rw,size=32m
+
+    secrets:
+      - triage_app_psql_password
+      - anthropic_api_key

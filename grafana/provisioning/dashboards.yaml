@@ -1,0 +1,27 @@
+# ==============================================================================
+# dashboards.yaml - Grafana dashboard provider for spoke-triage
+# ==============================================================================
+# Description: Grafana file-provider config (provisioning API v1) declaring
+#              where to load spoke-triage's dashboard JSON from. Mounted into
+#              Grafana's /etc/grafana/provisioning/dashboards/ (ADR-016) —
+#              this file itself is never edited by the operator; it just
+#              points at ../dashboards/, which spoke-monitoring bind-mounts
+#              separately from this repo's checkout. See README.md#grafana-dashboard.
+# Author: Matt Barham
+# Created: 2026-09-09
+# Version: 0.1.0
+# ==============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: spoke-triage
+    orgId: 1
+    folder: "Spoke Triage"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards/triage
+      foldersFromFilesStructure: false

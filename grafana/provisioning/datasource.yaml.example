@@ -1,0 +1,41 @@
+# ==============================================================================
+# datasource.yaml.example - Grafana Postgres datasource for spoke-triage
+# ==============================================================================
+# Description: Template for the read-only Postgres datasource the
+#              spoke_triage_overview.json dashboard queries by uid
+#              (spoke-triage-postgres, hardcoded in every panel — no
+#              $DS_ variable substitution, so this uid must match exactly).
+#              Copy to datasource.yaml (gitignored — contains a password) in
+#              the same directory Grafana provisioning reads, fill in the
+#              password, and bind-mount it alongside dashboards.yaml.
+# Author: Matt Barham
+# Created: 2026-09-09
+# Version: 0.1.0
+# ==============================================================================
+# Note: connects as triage_app, the same non-superuser role migrations grant
+# SELECT/INSERT/UPDATE to (docs/spec.md §6) — this datasource only ever
+# issues SELECT from dashboard queries, but the role itself is not read-only
+# at the Postgres grant level. If Grafana's provisioning-file environment-
+# variable expansion is available in your version (Grafana >= 9.1: $VAR_NAME
+# syntax), prefer exporting TRIAGE_APP_PSQL_PASSWORD into Grafana's
+# environment and referencing it here instead of a literal password.
+# ==============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: spoke-triage-postgres
+    uid: spoke-triage-postgres
+    type: postgres
+    access: proxy
+    url: postgres-hub:5432
+    database: triage
+    user: triage_app
+    editable: false
+    isDefault: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1800
+      timescaledb: false
+    secureJsonData:
+      password: "REPLACE_WITH_TRIAGE_APP_PSQL_PASSWORD"

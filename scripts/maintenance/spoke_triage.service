@@ -1,0 +1,35 @@
+# ==============================================================================
+# SPOKE-TRIAGE - SYSTEMD SERVICE
+# ==============================================================================
+# Description: systemd user service — runs run_triage.sh
+# Author: Matt Barham
+# Created: 2026-09-09
+# Version: 0.1.0
+# Host: Your Server
+# ==============================================================================
+# Type: systemd unit (service)
+# Component: spoke-triage / maintenance
+# ==============================================================================
+
+[Unit]
+Description=Spoke Triage - AI Log Analysis Run
+
+[Service]
+Type=oneshot
+# TODO: Edit ExecStart path for your installation
+# ExecStartPre polls Docker readiness (user units cannot depend on system docker.service)
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do docker info &>/dev/null && exit 0; sleep 2; done; exit 1'
+ExecStart=/path/to/spoke-triage/scripts/maintenance/run_triage.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spoke-triage
+
+# Security settings
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=default.target
