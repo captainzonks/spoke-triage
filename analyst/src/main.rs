@@ -7,8 +7,8 @@
 //              writes findings. Never receives raw log lines.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-10
+// Version: 0.1.1
 // ==============================================================================
 
 mod anthropic;
@@ -263,6 +263,7 @@ mod tests {
             monthly_budget_usd: 20.0,
             known_patterns_path: None,
             max_tokens: 4096,
+            max_templates_per_run: 150,
             instance_name: "spoke".to_string(),
             lookback_hours: 24,
             mail_relay_host: "mail-relay".to_string(),
