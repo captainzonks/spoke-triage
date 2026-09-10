@@ -8,15 +8,15 @@
 #              cross-referenced from spoke rather than merged into it.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-08
-# Version: 0.1.0
+# Modified: 2026-09-10
+# Version: 0.3.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
 # Status: Draft — awaiting approval
 # ==============================================================================
 
-## ADR-013: Collector/Analyst Egress Split
+## ADR-015: Collector/Analyst Egress Split
 
 **Decision**: Split spoke-triage into two containers along a hard egress
 boundary — `triage-collector` (no internet access, queries Loki, normalizes,
@@ -102,54 +102,86 @@ runs as root / holds `NET_ADMIN`+`NET_RAW`.
 
 ---
 
-## ADR-014: Normalization as a Redaction Mechanism, Not a Filter
+## ADR-016: Structural Redaction as the Primary Mechanism, With a Best-Effort Credential Filter Layered On
 
-**Decision**: Log-line normalization (spec §4) is the sole redaction
-mechanism for data crossing the collector→analyst boundary. There is no
-separate secondary redaction/filter pass on top of it.
+**Decision**: Log-line normalization (spec §4, patterns 1–11) remains the
+primary redaction mechanism for data crossing the collector→analyst
+boundary, and is a whitelist by construction. A second, narrower pass
+(spec §4, patterns 12–14: labeled credential fields, known credential ID
+prefixes, long base64-alphabet runs) is layered on top specifically to
+catch credential/token shapes, which are not a variable *shape* the
+whitelist alphabet models — they're free-form alphabetic entropy that
+survives normalization's digit/structure-only passes untouched.
 
-**Context**: The obvious alternative — send raw or lightly-redacted log
-lines and run a regex/filter pass to strip anything that looks like a
-secret — was considered and rejected. A filter is a blocklist: it catches
-patterns you thought to write a rule for, and silently passes anything you
-didn't. Given the open-ended nature of what applications can log, a
-blocklist approach cannot provide a real security guarantee, only a
-best-effort one.
+**Context**: This ADR originally claimed normalization was the *sole*
+redaction mechanism, with no secondary filter, on the reasoning below
+(kept, because it's still correct for what it covers). An external review
+of this repo demonstrated that claim was stronger than the implementation:
+`password=hunter2SuperSecret`, an AWS access key, an Anthropic API key, and
+a GitHub PAT all survived `normalize()` with only their digits replaced —
+the alphabetic characters carrying the actual secret passed straight
+through. Two fixes were considered:
 
-**Rationale**:
-- Normalization is a whitelist by construction: the output alphabet is
-  `<TIMESTAMP>`, `<UUID>`, `<IPV4>`, `<IPV6>`, `<MAC>`, `<EMAIL>`, `<URL>`,
-  `<PATH>`, `<HEX>`, `<PID>`, `<NUM>`, and literal template text. Nothing
-  outside that alphabet can appear in a template, so there's no category of
-  secret shape that slips through by omission the way a blocklist rule
-  would.
-- The redaction property becomes testable and enforceable (spec §8) rather
-  than a matter of ongoing regex maintenance and inspection.
-- It composes with the cost-optimization requirement (spec §1.1) instead of
-  competing with it — the same normalization pass that redacts is the pass
-  that enables aggregation.
+- **(a) — chosen**: add curated credential-shape patterns (labeled fields
+  like `password=`/`token=`, known prefixes like `AKIA`/`ghp_`/`sk-ant-`,
+  and long base64-alphabet runs for unlabeled/unprefixed secrets like a
+  Basic-auth value). This is honestly a blocklist for this one layer —
+  the trade this ADR's original argument said not to make — but it's
+  cheap, testable, and closes the demonstrated leaks.
+- **(b) — measured, rejected**: replace any sufficiently long run mixing
+  character classes (letters+digits) with `<TOKEN>`, regardless of shape,
+  closer to a real structural guarantee. Measured against this repo's
+  golden corpus (`common/tests/golden_normalize.rs`, six real services)
+  plus a broader probe of realistic non-secret identifiers: it left the
+  8-line golden corpus untouched, but consumed `traefik_v3.1.2`,
+  `container=authentik-worker-1`, and `worker-pool-3a` whole, destroying
+  the service-identifying text an analyst needs to triage the finding.
+  Rejected on that measured evidence, not a guess.
+
+**Rationale** (original, still applies to patterns 1–11):
+- Normalization is a whitelist by construction for the shapes it models:
+  the output alphabet is `<TIMESTAMP>`, `<UUID>`, `<IPV4>`, `<IPV6>`,
+  `<MAC>`, `<EMAIL>`, `<URL>`, `<PATH>`, `<HEX>`, `<PID>`, `<NUM>`, and
+  literal template text. Nothing outside that alphabet can appear in a
+  template for those shapes.
+- The redaction property for patterns 1–11 is testable and enforceable
+  (spec §8) rather than a matter of ongoing regex maintenance.
+- It composes with the cost-optimization requirement (spec §1.1) instead
+  of competing with it — the same normalization pass that redacts is the
+  pass that enables aggregation.
 - Verbatim exemplar lines are still retained, but **locally in Postgres
   only**, never sent to the API — satisfying the evidence-rule requirement
   (spec §7) that findings be traceable to real log content, without ever
   putting that raw content in an outbound request.
 
 **Consequences**:
-- Normalization pattern coverage (§4's ordered list) becomes a
-  security-relevant surface — a new variable-substring pattern that should
-  be redacted but isn't yet caught (e.g. a new secret-key format Spoke
-  starts using) requires updating the normalizer, not just adding a filter
-  rule. This is a real maintenance cost, offset by being caught in code
-  review and tested against, rather than silently degrading.
-- Templates that differ only in a value the normalizer doesn't yet
-  recognize as variable (e.g. a service-specific ID format) will
-  under-aggregate rather than over-redact — the failure mode leans toward
-  more distinct templates (higher cost, same safety) rather than a leaked
-  value (lower cost, broken safety). This is the correct direction to fail
-  in.
+- Normalization pattern coverage (§4's ordered list, patterns 1–11)
+  remains a security-relevant surface — a new variable-substring pattern
+  that should be redacted but isn't yet caught requires updating the
+  normalizer, not just adding a filter rule.
+- The credential layer (patterns 12–14) is explicitly a best-effort
+  blocklist, not a structural guarantee: a credential shape not yet
+  enumerated (a new provider's key format, an unlabeled non-base64 secret)
+  can still survive. ADR-013's threat model names "credentials leaked into
+  error messages, session tokens" as the first thing the egress split
+  exists to contain — this layer narrows that exposure but does not close
+  it to zero the way patterns 1–11 close IP/email/UUID/path leakage.
+  `common/src/normalize.rs`'s property tests assert the specific shapes
+  this layer is known to catch; they are not, and cannot be, a proof of
+  completeness.
+- Templates that differ only in a value neither pass recognizes as
+  variable (e.g. a service-specific ID format) will under-aggregate rather
+  than over-redact — the failure mode leans toward more distinct templates
+  (higher cost, same safety) rather than a leaked value (lower cost,
+  broken safety). This is the correct direction to fail in, and is why
+  option (b) above was rejected: it would have inverted this trade for the
+  credential layer, over-redacting into safety at the cost of triage
+  usefulness, for a benefit the golden-corpus measurement didn't show was
+  needed.
 
 ---
 
-## ADR-015: Structured Output via Forced Tool Use, Not Prompt-Instructed JSON
+## ADR-017: Structured Output via Forced Tool Use, Not Prompt-Instructed JSON
 
 **Decision**: The triage report schema is enforced via a Messages API tool
 definition with `strict: true` and `tool_choice` forcing that tool — not by
@@ -184,7 +216,7 @@ defect from spec §1.
 
 ---
 
-## ADR-016: Grafana Dashboard Provisioning Lives in spoke-triage
+## ADR-018: Grafana Dashboard Provisioning Lives in spoke-triage
 
 **Decision**: The dashboard JSON lives in `spoke-triage/grafana/dashboards/`,
 not in `spoke-monitoring`. Enabling it in `spoke-monitoring`'s Grafana
@@ -221,3 +253,54 @@ rather than silently exceeding the stated scope.
   `spoke-monitoring` deprecation/registration note.
 - Establishes the pattern other future modules should follow for their own
   Grafana dashboards — worth getting right here since it's precedent-setting.
+
+---
+
+## ADR-019: Test-Only CI, No Deploy CI
+
+**Decision**: Add a GitHub Actions workflow (`.github/workflows/ci.yml`)
+that runs `cargo test --workspace` and `cargo clippy --workspace
+--all-targets -- -D warnings` on every push to `main` and every PR.
+`cargo fmt --check` is deliberately not included yet — this repo has
+pre-existing formatting drift across most files, unrelated to this
+change, and turning that check on now would make CI red from the first
+run for a reason unrelated to what anyone actually broke. Add it once a
+separate whole-repo `cargo fmt` pass lands.
+
+**Context**: Spoke's own position is "no CI" — a build-and-deploy runner
+on a single node would need the Docker socket access the socket-proxy
+architecture exists to deny, and a runner cannot restart the stack it
+lives inside. That reasoning is sound, but it's an argument about
+*deployment*, not about running a test suite. An external review of this
+repo demonstrated the gap concretely: `analyst/src/main.rs`'s test helper
+fell out of sync with `config::Config` (a field was added to the struct
+but not to the test fixture), `cargo build` stayed green because it
+doesn't compile tests, and `cargo test --workspace` had been silently
+broken since the field was added — with no signal until someone ran it
+by hand (see the fix for this in this repo's history, same review round
+as this ADR).
+
+**Rationale**:
+- A test-only job needs no Docker socket, no host access, and deploys
+  nothing — it is not the circular case ("the runner needs the thing it
+  would be validating") the original no-CI decision rejected.
+- This is exactly the failure mode a test-only gate catches: production
+  code changes, a test fixture doesn't, and nothing notices until a human
+  happens to run the full suite. GitHub Actions runners are ephemeral and
+  have no access to this deployment's secrets, network, or Docker socket
+  by construction — there's no new attack surface to reason about.
+- Sharpens the existing position rather than reversing it: "no CI" becomes
+  "CI that deploys, no; CI that tests, yes" — a more precise decision, not
+  a different one.
+
+**Consequences**:
+- `cargo clippy -- -D warnings` makes a clippy warning a CI failure, not
+  just a local nit — new code must stay clippy-clean, matching what this
+  review round already brought the repo to.
+- `cargo fmt --check` is explicitly deferred, not silently dropped: the
+  repo is not currently `cargo fmt`-clean, and reformatting the whole
+  repo is out of scope for this change. Track it as follow-up work rather
+  than assuming this ADR covers it.
+- A red CI run now means a real regression, not a deploy-environment
+  quirk — the job runs on GitHub's generic runners with no dependency on
+  this specific server or its state.

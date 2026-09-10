@@ -8,8 +8,8 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
              classify, persist, report, track cost
 Author: Matt Barham
 Created: 2026-09-09
-Modified: 2026-09-09
-Version: 0.1.0
+Modified: 2026-09-10
+Version: 0.3.0
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -63,8 +63,9 @@ Only `triage-analyst` can reach the internet, and only `api.anthropic.com`.
 `triage-collector` queries Loki and writes aggregates to Postgres; it never
 talks to `triage-analyst` over the network — handoff is a shared Postgres
 table. `triage-analyst` never sees a raw log line, only normalized templates
-that are structurally incapable of carrying a secret, IP, or user identifier
-(see [Normalization](#normalization-the-redaction-claim)).
+that are structurally incapable of carrying an IP, email, UUID, absolute
+path, or long hex run, plus a best-effort filter for credential/token shapes
+beyond that (see [Normalization](#normalization-the-redaction-claim)).
 
 `triage-egress-guard` enforces this: a root sidecar with `NET_ADMIN`/`NET_RAW`
 (the *only* container in this module with either) that resolves
@@ -80,7 +81,7 @@ accept. `triage-analyst`'s `depends_on: condition: service_healthy` gates its
 startup on the guard having applied rules at least once. Full mechanism and
 the empirical verification (Anthropic reachable, Postgres reachable at the
 network layer, an arbitrary third host silently dropped) in
-[ADR-013](docs/architecture_decisions.md#adr-013-collectoranalyst-egress-split).
+[ADR-015](docs/architecture_decisions.md#adr-015-collectoranalyst-egress-split).
 
 ### Normalization (the redaction claim)
 
@@ -90,12 +91,17 @@ long hex runs, labelled PIDs, remaining numbers — with typed placeholders, in
 priority order so a generic decimal pattern can't swallow an IP octet. Two
 effects: token spend drops by roughly (lines ÷ distinct templates), and
 redaction becomes a structural property enforced by a property-based test
-suite, not by inspection or prompt instruction. `template_hash` is a SHA-256
-over `(service_name, logger, normalized_template)` — not template text alone
-— so two structurally identical lines from different services can't collapse
-and let an operator's `benign` verdict on one silently suppress an unrelated
-issue elsewhere. Details:
-[ADR-014](docs/architecture_decisions.md#adr-014-normalization-as-a-redaction-mechanism-not-a-filter).
+suite, not by inspection or prompt instruction, for the shapes above. A
+second, best-effort pass layered on top catches credential/token shapes
+(labeled fields like `password=`, known key prefixes like `AKIA`/`ghp_`,
+long base64 runs) that don't fit a fixed structural shape — a narrower
+guarantee than the structural patterns, tracked explicitly as such.
+`template_hash` is a SHA-256 over `(service_name, logger,
+normalized_template)` — not template text alone — so two structurally
+identical lines from different services can't collapse and let an
+operator's `benign` verdict on one silently suppress an unrelated issue
+elsewhere. Details:
+[ADR-016](docs/architecture_decisions.md#adr-016-structural-redaction-as-the-primary-mechanism-with-a-best-effort-credential-filter-layered-on).
 
 ### Structured output
 
@@ -103,7 +109,7 @@ Claude's response shape is forced via Messages API tool-use
 (`tool_choice: {"type": "tool", ...}`, `strict: true`) rather than
 prompt-instructed JSON — no fence-stripping, no empty-output handling, no
 schema drift.
-[ADR-015](docs/architecture_decisions.md#adr-015-structured-output-via-forced-tool-use-not-prompt-instructed-json).
+[ADR-017](docs/architecture_decisions.md#adr-017-structured-output-via-forced-tool-use-not-prompt-instructed-json).
 
 ### Suppression loop
 
@@ -295,7 +301,7 @@ token spend/cost trend, top recurring templates, new templates in window,
 run health history) lives in this repo rather than `spoke-monitoring` — the
 content belongs with the module it visualizes; `spoke-monitoring` just hosts
 Grafana and provisioning mounts.
-[ADR-016](docs/architecture_decisions.md#adr-016-grafana-dashboard-provisioning-lives-in-spoke-triage)
+[ADR-018](docs/architecture_decisions.md#adr-018-grafana-dashboard-provisioning-lives-in-spoke-triage)
 covers the rationale. Every panel queries a hardcoded datasource uid
 (`spoke-triage-postgres`, no `$DS_` variable prompt) — a Postgres datasource
 with that exact uid must exist before the dashboard renders.
@@ -319,7 +325,7 @@ with that exact uid must exist before the dashboard renders.
 ## References
 
 - [`docs/spec.md`](docs/spec.md) — full design spec
-- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-013 through ADR-016
+- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-015 through ADR-019
 - [Anthropic Messages API](https://docs.claude.com/en/api/messages)
 - [SQLx](https://docs.rs/sqlx/latest/sqlx/)
 

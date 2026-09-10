@@ -10,8 +10,8 @@
 #              docs/architecture_decisions.md.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-08
-# Version: 0.1.0
+# Modified: 2026-09-10
+# Version: 0.2.0
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -24,11 +24,9 @@
 AI-triaged log analysis today: four Loki `query_range` calls, raw JSON
 concatenated into a prompt (truncated at 102400 bytes/query), a `claude -p`
 shell-out asked to return JSON in prose, and an HTML report emailed and
-discarded. Defects (see build brief `docs/local/spoke_triage_build_prompt.md`
-in the `spoke` repo for full rationale): interactive-auth dependency,
-unenforced output shape, no persistence, truncation/token waste, static
-institutional knowledge, no cost accounting, raw logs leaving the host
-unconstrained.
+discarded. Defects: interactive-auth dependency, unenforced output shape, no
+persistence, truncation/token waste, static institutional knowledge, no cost
+accounting, raw logs leaving the host unconstrained.
 
 ## 1.1 Optimization priority (overrides all other tie-breaks)
 
@@ -70,7 +68,7 @@ order:
 ## 3. Architecture
 
 Two containers, split on the egress boundary. See
-[ADR-013](architecture_decisions.md#adr-013-collectoranalyst-egress-split)
+[ADR-015](architecture_decisions.md#adr-015-collectoranalyst-egress-split)
 for the full rationale.
 
 ### 3.1 `triage-collector` — no egress
@@ -92,8 +90,9 @@ Never talks to the internet. No Docker socket access.
 
 Reads aggregated templates + counts + history from Postgres. Calls the
 Anthropic Messages API. Never receives raw log lines — only normalized
-templates, which are structurally incapable of carrying a secret, IP, or user
-identifier (§4). Holds no Docker socket access.
+templates, which are structurally incapable of carrying an IP, email, UUID,
+absolute path, or long hex run, and pass through a best-effort credential
+filter beyond that (§4, ADR-016). Holds no Docker socket access.
 
 - API key from `/run/secrets/anthropic_api_key`, referenced in compose as
   `ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key` (custom entrypoint
@@ -129,11 +128,21 @@ generic decimal-number pattern):
 6. Email addresses → `<EMAIL>`
 7. URLs (`scheme://...`) → `<URL>`
 8. Absolute file paths (`/...` with ≥2 segments) → `<PATH>`
-9. Hex runs ≥8 chars (tokens, hashes, keys) → `<HEX>`
-10. PIDs — only when preceded by a PID-indicating label (`pid=`, `PID `,
+9. Labeled credential fields (`password=`, `token:`, `api_key=`, etc.) →
+   `<SECRET>` (best-effort, see ADR-016 — must run before 12/14 or a digit
+   inside the value gets consumed first, leaving the rest of the secret
+   behind)
+10. Known credential ID prefixes (AWS `AKIA...`, GitHub `ghp_`/`gho_`/
+    `ghu_`/`ghs_`/`ghr_`, Anthropic `sk-ant-`, OpenAI-style `sk-`) →
+    `<SECRET>` (best-effort, no label required)
+11. Long unbroken base64-alphabet runs (~20+ chars) → `<SECRET>`
+    (best-effort; catches unlabeled/unprefixed secrets like a Basic-auth
+    value)
+12. Hex runs ≥8 chars (tokens, hashes, keys) → `<HEX>`
+13. PIDs — only when preceded by a PID-indicating label (`pid=`, `PID `,
     `[pid:`) → `<PID>` (bare numbers are not assumed to be PIDs; see the
     evidence-rule carryover in §7)
-11. Remaining decimal number runs → `<NUM>`
+14. Remaining decimal number runs → `<NUM>`
 
 `template_hash` = SHA-256 of `(service_name, logger_or_module,
 normalized_template)` — not template text alone. Two structurally identical
@@ -147,7 +156,10 @@ Two effects follow, and both matter to the design:
   Aggregate before any API call.
 - **Redaction as a structural property**: a normalized template cannot carry
   an IP, email, UUID, absolute path, or long hex run — enforced by the
-  redaction test suite (§8), not by inspection.
+  redaction test suite (§8), not by inspection. Credential/token shapes
+  (patterns 9–11) are a narrower, best-effort guarantee layered on top, not
+  part of this structural property — see ADR-016 for why, and for what it
+  does not cover.
 
 ## 5. Structured output
 
@@ -305,7 +317,7 @@ under-classifying severity on real Spoke logs.
 2. **Grafana dashboard**, committed as JSON in this repo under
    `grafana/dashboards/`, provisioned into `spoke-monitoring`'s Grafana via a
    provisioning directory mount — see
-   [ADR-016](architecture_decisions.md#adr-016-grafana-dashboard-provisioning-lives-in-spoke-triage).
+   [ADR-018](architecture_decisions.md#adr-018-grafana-dashboard-provisioning-lives-in-spoke-triage).
    Panels: findings by severity over time, top recurring templates, new
    templates in the window, token spend and cost trend, run health history.
 
@@ -361,7 +373,11 @@ timer with jitter (`RandomizedDelaySec`).
   format, no quotes on ports/IPs.
 - `modules.yml.example` registration entry with `repo`, `ref`, `enabled`,
   `env_overrides`, `secrets_map` — mirror the monitoring module's entry.
-- ADR numbering continues from `spoke`'s highest existing ADR (ADR-012) —
-  this repo's ADRs are ADR-013+, kept in this repo's own
+- ADR numbering continues from `spoke`'s highest existing ADR at the time of
+  writing — this repo's ADRs are ADR-015+, kept in this repo's own
   `docs/architecture_decisions.md` since spoke-triage is standalone-first,
-  cross-referenced from `spoke`'s ADR log rather than merged into it.
+  cross-referenced from `spoke`'s ADR log rather than merged into it. (This
+  repo originally claimed ADR-013+, colliding with two ADRs `spoke` had
+  added to its own sequence in the meantime — see `spoke`'s own
+  `docs/module_development.md` for the convention that should prevent a
+  repeat.)

@@ -18,3 +18,6 @@ logs/
 .idea/
 .vscode/
 *.swp
+
+# Added by ggshield
+.cache_ggshield

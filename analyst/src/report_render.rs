@@ -10,8 +10,8 @@
 //              is unit-testable without a live mail relay.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-10
+// Version: 0.1.1
 // ==============================================================================
 
 use crate::db::WrittenFinding;
@@ -53,7 +53,7 @@ fn severity_color(severity: &str) -> &'static str {
     }
 }
 
-fn group_by_severity<'a>(findings: &'a [WrittenFinding]) -> Vec<(&'static str, Vec<&'a WrittenFinding>)> {
+fn group_by_severity(findings: &[WrittenFinding]) -> Vec<(&'static str, Vec<&WrittenFinding>)> {
     SEVERITY_ORDER
         .iter()
         .map(|&sev| (sev, findings.iter().filter(|f| f.severity == sev).collect::<Vec<_>>()))
@@ -163,10 +163,10 @@ pub fn build_text(ctx: &ReportContext) -> String {
         } else {
             for f in &items {
                 let _ = writeln!(out, "  [{}] {}", f.status.to_uppercase(), f.issue);
-                if matches!(severity, "CRITICAL" | "HIGH") {
-                    if let Some(rec) = f.recommendation.as_deref().filter(|r| !r.is_empty()) {
-                        let _ = writeln!(out, "    -> {rec}");
-                    }
+                if matches!(severity, "CRITICAL" | "HIGH")
+                    && let Some(rec) = f.recommendation.as_deref().filter(|r| !r.is_empty())
+                {
+                    let _ = writeln!(out, "    -> {rec}");
                 }
             }
         }
