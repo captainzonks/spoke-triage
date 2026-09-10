@@ -6,8 +6,8 @@
 --              api_call) plus indexes and triage_app grants.
 -- Author: Matt Barham
 -- Created: 2026-09-09
--- Modified: 2026-09-09
--- Version: 0.1.0
+-- Modified: 2026-09-10
+-- Version: 0.1.1
 -- ==============================================================================
 --
 -- Role model (docs/spec.md §6): this migration is applied by the `triage_app`
@@ -157,6 +157,15 @@ COMMENT ON TABLE api_call IS 'One row per Anthropic Messages API call, for cost 
 -- ==============================================================================
 -- GRANTS (triage_app; see role-model caveat in the file header)
 -- ==============================================================================
+--
+-- This migration runs as triage_app, which then owns every table it just
+-- created — so every GRANT below is currently a self-grant and a no-op:
+-- Postgres lets an owner SELECT/INSERT/UPDATE/DELETE regardless of what's
+-- granted or revoked. They are left in anyway as executable documentation
+-- of the intended runtime privilege set (SELECT/INSERT/UPDATE, no DELETE),
+-- so that if ownership is ever split from the runtime role — the same
+-- prerequisite the DROP/ALTER caveat above already needs — these grants
+-- start being the real enforcement instead of a statement of intent.
 
 GRANT SELECT, INSERT, UPDATE ON run TO triage_app;
 GRANT SELECT, INSERT, UPDATE ON log_template TO triage_app;
