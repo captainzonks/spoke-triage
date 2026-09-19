@@ -8,8 +8,8 @@
 #              cross-referenced from spoke rather than merged into it.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-10
-# Version: 0.3.0
+# Modified: 2026-09-19
+# Version: 0.4.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -304,3 +304,78 @@ as this ADR).
 - A red CI run now means a real regression, not a deploy-environment
   quirk — the job runs on GitHub's generic runners with no dependency on
   this specific server or its state.
+
+## ADR-020: The Analyst Claims the Newest Pending Run and Retires the Rest
+
+**Decision**: `triage-analyst` selects the **newest** run still in
+`running` status (`ORDER BY id DESC`), not the oldest, and marks every
+older `running` run `abandoned` (migration 0004) in the same pass. The
+emailed report's "Period" line renders the analyzed run's actual
+`window_start`/`window_end` instead of the configured
+`TRIAGE_LOOKBACK_HOURS`. `TRIAGE_LOOKBACK_HOURS` is now read only by
+`triage-collector`, which is the component that defines the window.
+
+**Context**: `run_triage.sh` runs the collector and then the analyst as
+one cycle, so under normal operation exactly one run is in `running`
+when the analyst starts, and oldest-first and newest-first agree. They
+diverge the moment an analyst pass fails after its collector succeeded —
+observed in production on 2026-09-17, when the timer fired 17 minutes
+after a host boot, the collector completed, and the analyst did not.
+That left run 16 stranded in `running` forever.
+
+Because the analyst took the *oldest* pending run, every subsequent
+cycle then collected a fresh window and analyzed the previous one:
+
+```
+run 16  collected Sep 17 23:14   analyzed Sep 18 06:06
+run 17  collected Sep 18 06:05   analyzed Sep 19 06:02   <- emailed as "Last 24 hours"
+run 18  collected Sep 19 06:01   still `running`
+```
+
+The failure is silent and permanent. There is always exactly one run in
+`running`, so nothing looks stuck; each day's email arrives on time, is
+well-formed, and describes a window that ended 24 hours before it was
+sent. The report's own header said "Period: Last 24 hours", which was
+false for every report after the stranding, and was the reason the drift
+went unnoticed for two days. The operational cost is real: the Sep 19
+email reported `degraded` with nine findings, all of them the boot
+cascade from the Sep 17 reboot (services racing DNS and MinIO at
+startup). The window that had actually just elapsed was `healthy` with
+zero findings.
+
+**Rationale**:
+- The report answers "what is the infrastructure doing now". A stale
+  window is not a partial answer to that question, it is a wrong one.
+- Newest-first makes a failed analyst cost exactly one report. The next
+  cycle is correct with no operator intervention, where oldest-first
+  required someone to notice the offset and drain the backlog by hand.
+- The skipped runs' aggregates (`log_template`, `template_occurrence`)
+  are already written and stay queryable, so trend counts and history
+  are unaffected; only the run's lifecycle status changes. Retiring them
+  is what keeps `running` from accumulating rows that would each cost a
+  future cycle.
+- `abandoned` rather than reusing `failed`: `failed` is written by the
+  collector's own error path, so overloading it would make "the
+  collector could not complete" and "the collector completed, nothing
+  analyzed it" indistinguishable in history — exactly the distinction
+  needed to tell whether Loki or the Anthropic path is the flaky one.
+- Rendering the real window is the cheap half of the fix and independent
+  of the rest: any future divergence between the intended and analyzed
+  window is visible in the email itself rather than requiring a database
+  query to detect.
+
+**Consequences**:
+- Migration 0004 rewrites `run_status_check`. It is additive (no existing
+  value is removed) and applies automatically via `sqlx::migrate!` on the
+  collector's next start.
+- A run skipped by the analyst is never analyzed. This is deliberate: its
+  window has passed and a newer run covers the current state. Its
+  aggregates remain in the database, so nothing is lost but the severity
+  classification for a window nobody can act on any more.
+- Reports no longer state a fixed lookback. Readers see two timestamps,
+  which is strictly more information and self-describing when a run
+  covers a non-standard window (a manual run, or a changed
+  `TRIAGE_LOOKBACK_HOURS`).
+- `collector/tests/migrations.rs` gains a case asserting the constraint
+  accepts `abandoned` and still rejects unknown statuses.
+

@@ -20,7 +20,12 @@ use std::fmt::Write as _;
 
 pub struct ReportContext<'a> {
     pub instance_name: &'a str,
-    pub lookback_hours: i64,
+    /// The window the analyzed run actually covers, straight off the run
+    /// row — NOT `now() - TRIAGE_LOOKBACK_HOURS`. The two are equal on a
+    /// healthy cycle and diverge exactly when something went wrong, which
+    /// is when the reader most needs to see it.
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
     pub health: &'a str,
     pub total_events: i64,
     pub summary: &'a str,
@@ -70,14 +75,15 @@ pub fn build_html(ctx: &ReportContext) -> String {
         out,
         r#"<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
 <h1 style="border-bottom: 3px solid #333; padding-bottom: 10px;">{instance} Daily Log Report</h1>
-<p><strong>Period:</strong> Last {lookback} hours |
+<p><strong>Period:</strong> {window_start} .. {window_end} UTC |
 <strong>Health:</strong> <span style="color: {health_color}; font-weight: bold;">{health}</span> |
 <strong>Total Events:</strong> {events}</p>
 
 <h2>Executive Summary</h2>
 <p>{summary}</p>"#,
         instance = escape_html(ctx.instance_name),
-        lookback = ctx.lookback_hours,
+        window_start = ctx.window_start.format("%Y-%m-%d %H:%M"),
+        window_end = ctx.window_end.format("%Y-%m-%d %H:%M"),
         health_color = health_color(ctx.health),
         health = escape_html(&ctx.health.to_uppercase()),
         events = ctx.total_events,
@@ -146,7 +152,12 @@ pub fn build_text(ctx: &ReportContext) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{} Daily Log Report", ctx.instance_name);
     let _ = writeln!(out, "{}", "=".repeat(60));
-    let _ = writeln!(out, "Period: Last {} hours", ctx.lookback_hours);
+    let _ = writeln!(
+        out,
+        "Period: {} .. {} UTC",
+        ctx.window_start.format("%Y-%m-%d %H:%M"),
+        ctx.window_end.format("%Y-%m-%d %H:%M")
+    );
     let _ = writeln!(out, "Health: {}", ctx.health.to_uppercase());
     let _ = writeln!(out, "Total Events: {}", ctx.total_events);
     out.push('\n');
@@ -191,7 +202,8 @@ mod tests {
     fn ctx<'a>(findings: &'a [WrittenFinding]) -> ReportContext<'a> {
         ReportContext {
             instance_name: "spoke",
-            lookback_hours: 24,
+            window_start: DateTime::parse_from_rfc3339("2026-09-08T12:00:00Z").unwrap().with_timezone(&Utc),
+            window_end: DateTime::parse_from_rfc3339("2026-09-09T12:00:00Z").unwrap().with_timezone(&Utc),
             health: "degraded",
             total_events: 42,
             summary: "one recurring worker exit",

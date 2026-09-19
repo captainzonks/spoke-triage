@@ -225,7 +225,7 @@ entirely.
 | `TRIAGE_POSTGRES_DB`             | `triage`                          | Database name                                |
 | `TRIAGE_LOKI_BASE_URL`           | `http://loki:3100`                | Loki base URL                                |
 | `TRIAGE_LOKI_TENANT_ID`          | `fake`                            | Loki tenant header                           |
-| `TRIAGE_LOOKBACK_HOURS`          | `24`                              | Query window                                 |
+| `TRIAGE_LOOKBACK_HOURS`          | `24`                              | Query window (collector only)                |
 | `TRIAGE_EXEMPLAR_LIMIT`          | `3`                               | Verbatim exemplar lines kept per template    |
 | `TRIAGE_MODEL`                   | `claude-haiku-4-5`                | Anthropic model                              |
 | `TRIAGE_MONTHLY_BUDGET_USD`      | `20`                              | Hard monthly spend cap                       |
