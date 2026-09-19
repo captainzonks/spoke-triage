@@ -10,8 +10,8 @@
 #              docs/architecture_decisions.md.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-10
-# Version: 0.2.0
+# Modified: 2026-09-19
+# Version: 0.3.0
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -103,6 +103,13 @@ filter beyond that (§4, ADR-016). Holds no Docker socket access.
 - `cap_drop: ALL`, `read_only: true` root, `no-new-privileges:true`, run as
   `1000:968`, per-service `mem_limit`/`cpus` — matching hub/monitoring
   conventions (`docs/docker_compose_structure_standards.md` in `spoke`).
+- Claims the **newest** run in `running` status and marks any older
+  `running` runs `abandoned`, so an analyst pass that fails after its
+  collector succeeded costs one report rather than permanently offsetting
+  every later cycle by one run — see
+  [ADR-020](architecture_decisions.md#adr-020-the-analyst-claims-the-newest-pending-run-and-retires-the-rest).
+  `TRIAGE_LOOKBACK_HOURS` is a collector setting; the analyst takes its
+  window from the run row.
 - Outbound HTTPS restricted to `api.anthropic.com`: an `iptables OUTPUT` rule
   on the container's network namespace, matched by destination IP resolved
   from `api.anthropic.com` at container start and refreshed by a resolver
@@ -191,6 +198,11 @@ template_occurrence  (id PK, template_hash FK, run_id FK, service_name,
                        count, window_start, window_end)
 run                  (id PK, started_at, window_start, window_end,
                        health_verdict, summary, status)
+                     status: pending | running | completed | failed |
+                       budget_exhausted | abandoned  (`failed` = the
+                       collector could not finish; `abandoned` = it did,
+                       but a newer run superseded it before any analyst
+                       claimed it — ADR-020)
 finding              (id PK, run_id FK, template_hash FK, severity, issue,
                        recommendation, status)
 verdict              (template_hash PK, classification (benign|known-issue|
@@ -313,7 +325,9 @@ under-classifying severity on real Spoke logs.
 
 1. **Email** through the existing mail relay, preserving the current HTML
    report's structure. Add the new-vs-recurring signal (from `finding.status`)
-   and a cost line (from `api_call`).
+   and a cost line (from `api_call`). The "Period" line renders the analyzed
+   run's actual `window_start`/`window_end`, never a configured lookback — a
+   report must not be able to misstate the window it covers (ADR-020).
 2. **Grafana dashboard**, committed as JSON in this repo under
    `grafana/dashboards/`, provisioned into `spoke-monitoring`'s Grafana via a
    provisioning directory mount — see

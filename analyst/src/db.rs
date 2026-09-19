@@ -49,10 +49,21 @@ pub struct WrittenFinding {
     pub status: &'static str,
 }
 
-/// The oldest run still in `running` status: collector wrote its aggregates,
+/// The NEWEST run still in `running` status: collector wrote its aggregates,
 /// analyst hasn't processed it yet.
+///
+/// Newest, not oldest, because the report is about what the infrastructure is
+/// doing *now*. A run is only left in `running` when its analyst never
+/// finished — an analyst crash, Postgres still replaying WAL after a host
+/// boot, an operator Ctrl-C. Draining the oldest such run first means one
+/// failed analyst silently offsets every subsequent cycle by one run: each
+/// day's timer collects a fresh window, then analyzes and emails the previous
+/// day's, with the email's own "Period" line still claiming it covers the last
+/// `TRIAGE_LOOKBACK_HOURS`. That state never self-heals. Claiming the newest
+/// run keeps every report current; `abandon_superseded_runs` retires the ones
+/// skipped over so they don't accumulate.
 pub async fn next_pending_run(pool: &PgPool) -> anyhow::Result<Option<PendingRun>> {
-    let row = sqlx::query("SELECT id, window_start, window_end FROM run WHERE status = 'running' ORDER BY id ASC LIMIT 1")
+    let row = sqlx::query("SELECT id, window_start, window_end FROM run WHERE status = 'running' ORDER BY id DESC LIMIT 1")
         .fetch_optional(pool)
         .await?;
     Ok(row.map(|r| PendingRun {
@@ -60,6 +71,20 @@ pub async fn next_pending_run(pool: &PgPool) -> anyhow::Result<Option<PendingRun
         window_start: r.get("window_start"),
         window_end: r.get("window_end"),
     }))
+}
+
+/// Retires every `running` run older than the one being analyzed. Their
+/// aggregates (log_template, template_occurrence) are already written and stay
+/// queryable for history and trend counts — only the run's lifecycle status
+/// changes, so it is no longer a candidate for a future analyst pass.
+/// Returns how many rows were retired. See migration 0004 for why this is
+/// `abandoned` rather than `failed`.
+pub async fn abandon_superseded_runs(pool: &PgPool, current_run_id: i64) -> anyhow::Result<u64> {
+    let result = sqlx::query("UPDATE run SET status = 'abandoned' WHERE status = 'running' AND id < $1")
+        .bind(current_run_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Templates from this run's occurrences, joined to log_template for

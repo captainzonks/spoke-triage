@@ -253,8 +253,10 @@ services:
       - TRIAGE_KNOWN_PATTERNS_PATH=${TRIAGE_KNOWN_PATTERNS_PATH}
 
       # Reporting
+      # No TRIAGE_LOOKBACK_HOURS here: that is a collector setting. The analyst
+      # takes the reported window from the run row the collector wrote, so the
+      # report can never misstate the window it covers (ADR-020).
       - INSTANCE_NAME=${INSTANCE_NAME}
-      - TRIAGE_LOOKBACK_HOURS=${TRIAGE_LOOKBACK_HOURS}
       - TRIAGE_MAIL_RELAY_HOST=${TRIAGE_MAIL_RELAY_HOST}
       - TRIAGE_MAIL_RELAY_PORT=${TRIAGE_MAIL_RELAY_PORT}
       - TRIAGE_MAIL_TO=${TRIAGE_MAIL_TO}

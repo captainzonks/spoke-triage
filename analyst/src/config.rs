@@ -37,7 +37,6 @@ pub struct Config {
     // average with headroom under 200K for system prompt + schema.
     pub max_templates_per_run: i64,
     pub instance_name: String,
-    pub lookback_hours: i64,
     // Host+port rather than a single URL: triage-egress-guard (which shares
     // this container's netns) needs a bare hostname to `dig`, so keeping
     // the same shape here avoids parsing a URL apart just to reassemble it.
@@ -57,7 +56,6 @@ impl Config {
             max_tokens: env_or("TRIAGE_MAX_TOKENS", "4096").parse()?,
             max_templates_per_run: env_or("TRIAGE_MAX_TEMPLATES_PER_RUN", "150").parse()?,
             instance_name: env_or("INSTANCE_NAME", "spoke"),
-            lookback_hours: env_or("TRIAGE_LOOKBACK_HOURS", "24").parse()?,
             mail_relay_host: env_or("TRIAGE_MAIL_RELAY_HOST", "mail-relay"),
             mail_relay_port: env_or("TRIAGE_MAIL_RELAY_PORT", "8000").parse()?,
             mail_to: std::env::var("TRIAGE_MAIL_TO").ok().filter(|s| !s.is_empty()),

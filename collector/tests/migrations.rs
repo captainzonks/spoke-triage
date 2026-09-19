@@ -11,8 +11,8 @@
 //              migration's explicit SELECT/INSERT/UPDATE-only GRANTs.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-19
+// Version: 0.2.0
 // ==============================================================================
 //
 // Ignored by default — requires a real Postgres reachable via two env vars:
@@ -130,6 +130,34 @@ async fn triage_app_can_select_insert_update_all_tables() {
         .await
         .expect("select from log_template");
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+#[ignore]
+async fn run_status_check_accepts_abandoned_and_rejects_unknown() {
+    let (_admin, app) = reset_and_migrate().await;
+
+    // migration 0004: triage-analyst retires superseded `running` runs rather
+    // than draining them one per cycle, so the status must be writable.
+    sqlx::query(
+        "INSERT INTO run (window_start, window_end, status)
+         VALUES (now() - interval '1 hour', now(), 'abandoned')",
+    )
+    .execute(&app)
+    .await
+    .expect("run_status_check must accept 'abandoned'");
+
+    let err = sqlx::query(
+        "INSERT INTO run (window_start, window_end, status)
+         VALUES (now() - interval '1 hour', now(), 'not-a-status')",
+    )
+    .execute(&app)
+    .await
+    .expect_err("run_status_check must still reject unknown statuses");
+    assert!(
+        err.to_string().contains("run_status_check"),
+        "expected the status CHECK constraint to reject it, got: {err}"
+    );
 }
 
 #[tokio::test]

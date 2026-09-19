@@ -51,6 +51,17 @@ async fn main() -> anyhow::Result<()> {
     let run_id = pending.run_id;
     eprintln!("run {run_id}: analyzing window {} .. {}", pending.window_start, pending.window_end);
 
+    // Runs older than this one are still `running` only because their analyst
+    // never finished. Retire them now so they are not drained one-per-cycle
+    // later, which would leave every future report a run behind (see
+    // db::next_pending_run). Skipped under --dry-run, which writes nothing.
+    if !dry_run {
+        let retired = db::abandon_superseded_runs(&pool, run_id).await?;
+        if retired > 0 {
+            eprintln!("retired {retired} superseded run(s) left in 'running' by an earlier failed analyst");
+        }
+    }
+
     let mail_transport = RelayTransport::new(&cfg.mail_relay_host, cfg.mail_relay_port);
 
     // Hard monthly budget gate (spec §9/§1.1 point 7): degrade to
@@ -62,7 +73,8 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("month-to-date spend ${spend:.2} >= budget ${:.2} — skipping model triage", cfg.monthly_budget_usd);
         let ctx = ReportContext {
             instance_name: &cfg.instance_name,
-            lookback_hours: cfg.lookback_hours,
+            window_start: pending.window_start,
+            window_end: pending.window_end,
             health: "unknown",
             total_events: 0,
             summary: "Monthly budget exhausted — AI triage skipped this run. Aggregation and history are still current; no severity classification was performed.",
@@ -104,7 +116,8 @@ async fn main() -> anyhow::Result<()> {
         println!("{user_text}");
         let ctx = ReportContext {
             instance_name: &cfg.instance_name,
-            lookback_hours: cfg.lookback_hours,
+            window_start: pending.window_start,
+            window_end: pending.window_end,
             health: "unknown",
             total_events: templates.iter().map(|t| t.total_count).sum(),
             summary: "DRY RUN — Anthropic was not called, so no severity classification is shown here. See the user message above for exactly what would have been sent.",
@@ -161,7 +174,8 @@ async fn main() -> anyhow::Result<()> {
                 &cfg,
                 ReportContext {
                     instance_name: &cfg.instance_name,
-                    lookback_hours: cfg.lookback_hours,
+                    window_start: pending.window_start,
+                    window_end: pending.window_end,
                     health: &health,
                     total_events,
                     summary: &summary,
@@ -251,7 +265,7 @@ mod tests {
     use super::*;
     use anthropic::mock::MockTransport;
     use anthropic::{ContentBlock, MessagesResponse, Usage};
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use db::PendingTemplate;
     use serde_json::json;
 
@@ -265,7 +279,6 @@ mod tests {
             max_tokens: 4096,
             max_templates_per_run: 150,
             instance_name: "spoke".to_string(),
-            lookback_hours: 24,
             mail_relay_host: "mail-relay".to_string(),
             mail_relay_port: 8000,
             mail_to: Some("admin@example.test".to_string()),
@@ -380,7 +393,8 @@ mod tests {
     fn test_report_ctx() -> ReportContext<'static> {
         ReportContext {
             instance_name: "spoke",
-            lookback_hours: 24,
+            window_start: DateTime::parse_from_rfc3339("2026-09-08T12:00:00Z").unwrap().with_timezone(&Utc),
+            window_end: DateTime::parse_from_rfc3339("2026-09-09T12:00:00Z").unwrap().with_timezone(&Utc),
             health: "degraded",
             total_events: 5,
             summary: "test summary",
