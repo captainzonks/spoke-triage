@@ -9,8 +9,8 @@
 //              guarantee that every possible secret shape is caught.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-10
-// Version: 0.2.0
+// Modified: 2026-09-25
+// Version: 0.3.0
 // ==============================================================================
 
 use regex::Regex;
@@ -19,18 +19,20 @@ use std::sync::OnceLock;
 /// Ordered patterns. Order matters: earlier, more specific patterns must run
 /// before later, more general ones (e.g. IPv4 before the trailing decimal-run
 /// pattern) or the general pattern swallows the specific one's digits first.
-/// MAC runs before IPv6 (spec §4 lists IPv6 first) because the general IPv6
-/// shape — 2-to-7 colon-separated hex groups — also matches a bare MAC
-/// address (six 2-hex-digit groups); MAC's exact 6x2-hex-digit shape is
-/// unambiguous and must claim the match first.
+/// MAC runs before IPv6 (spec §4 lists IPv6 first) and before the bare
+/// clock pattern: a MAC whose octets are all decimal (`00:11:22:...`) would
+/// otherwise have its first three groups read as `hh:mm:ss`.
 struct Patterns {
     timestamp: Regex,
+    us_datetime: Regex,
     uuid: Regex,
     mac: Regex,
     ipv6: Regex,
+    clock: Regex,
     ipv4: Regex,
     email: Regex,
     url: Regex,
+    quoted_path: Regex,
     path: Regex,
     hex_run: Regex,
     labeled_pid: Regex,
@@ -50,8 +52,21 @@ const IPV6_MARK: &str = "\u{0}IPVSIXMARK\u{0}";
 fn patterns() -> &'static Patterns {
     static PATTERNS: OnceLock<Patterns> = OnceLock::new();
     PATTERNS.get_or_init(|| Patterns {
+        // ISO 8601 / RFC 3339, plus the `YYYY/MM/DD hh:mm:ss` variant that
+        // nginx's error log and Liquidsoap emit, and the Common Log Format
+        // `DD/Mon/YYYY:hh:mm:ss +zzzz` of access logs (Traefik, nginx).
+        // Without the slash forms the date half fell to the path pattern
+        // (`<NUM><PATH>`).
         timestamp: Regex::new(
-            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+            r"\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\b\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}(?: [+-]\d{4})?",
+        )
+        .unwrap(),
+        // US `MM/DD/YYYY, h:mm:ss [AM|PM]` (NestJS, many JS loggers). The
+        // time part is required, and group 1 must not be `/` or a digit, so
+        // a date-shaped run of path segments (`/backups/12/05/2024/x`) is
+        // left for the path pattern rather than split open by this one.
+        us_datetime: Regex::new(
+            r"(^|[^/\d])\d{1,2}/\d{1,2}/\d{4},?\s+\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?(?:\s?[AaPp][Mm]\b)?",
         )
         .unwrap(),
         uuid: Regex::new(
@@ -59,16 +74,35 @@ fn patterns() -> &'static Patterns {
         )
         .unwrap(),
         mac: Regex::new(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b").unwrap(),
+        // A valid IPv6 address has either all eight groups or a `::`. The
+        // old 2-to-7-group shape also matched any `hh:mm:ss` clock value
+        // and labelled it <IPV6>. The middle alternative now takes the
+        // groups after an interior `::` (`2001:db8::1`), which it used to
+        // leave behind for the number pass.
         ipv6: Regex::new(
-            r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|\b(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}\b",
+            r"(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b|\b(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5}\b)?|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}\b",
         )
         .unwrap(),
+        // Bare clock value with no date (Redis, slskd `[hh:mm:ss INF]`,
+        // durations). Runs after IPv6 so a real address claims its digits
+        // first.
+        clock: Regex::new(r"\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b").unwrap(),
         ipv4: Regex::new(
             r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b",
         )
         .unwrap(),
         email: Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
         url: Regex::new(r#"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"'<>]+"#).unwrap(),
+        // A quoted absolute path, taken whole up to the closing quote so
+        // that spaces inside it (`"/music/Pink Floyd/The Wall/01.flac"`)
+        // don't end the match. The unquoted pattern below stops at the
+        // first space and leaves the rest of the path as template text,
+        // which made every media file its own template. The double-quote
+        // arm also accepts JSON-escaped `\"...\"`.
+        quoted_path: Regex::new(
+            r#"(\\?")/[^"\\\n]*/[^"\\\n]*(\\?")|(')/[^'\n]*/[^'\n]*(')"#,
+        )
+        .unwrap(),
         path: Regex::new(r"(?:/[\w.\-]+){2,}").unwrap(),
         hex_run: Regex::new(r"(?i)\b[0-9a-f]{8,}\b").unwrap(),
         labeled_pid: Regex::new(r"(?i)(pid=|pid |\[pid:\s*)(\d+)").unwrap(),
@@ -116,12 +150,21 @@ fn patterns() -> &'static Patterns {
 pub fn normalize(line: &str) -> String {
     let p = patterns();
     let s = p.timestamp.replace_all(line, "<TIMESTAMP>");
+    let s = p
+        .us_datetime
+        .replace_all(&s, |caps: &regex::Captures| format!("{}<TIMESTAMP>", &caps[1]));
     let s = p.uuid.replace_all(&s, "<UUID>");
     let s = p.mac.replace_all(&s, "<MAC>");
     let s = p.ipv6.replace_all(&s, IPV6_MARK);
+    let s = p.clock.replace_all(&s, "<TIMESTAMP>");
     let s = p.ipv4.replace_all(&s, IPV4_MARK);
     let s = p.email.replace_all(&s, "<EMAIL>");
     let s = p.url.replace_all(&s, "<URL>");
+    let s = p.quoted_path.replace_all(&s, |caps: &regex::Captures| {
+        let open = caps.get(1).or_else(|| caps.get(3)).map_or("", |m| m.as_str());
+        let close = caps.get(2).or_else(|| caps.get(4)).map_or("", |m| m.as_str());
+        format!("{open}<PATH>{close}")
+    });
     let s = p.path.replace_all(&s, "<PATH>");
     // Credential passes must run before hex_run/number: labeled_secret and
     // cred_prefix values often contain digits, and hex_run/number would
@@ -204,6 +247,73 @@ mod tests {
         );
     }
 
+    /// Bare `hh:mm:ss` used to satisfy the 2-to-7-group IPv6 shape and come
+    /// out as `<IPV6>`, which told the analyst an address was involved.
+    #[test]
+    fn clock_time_is_timestamp_not_ipv6() {
+        assert_eq!(normalize("[22:18:42 INF] started"), "[<TIMESTAMP> INF] started");
+        assert_eq!(normalize("took 0:05:12.345 total"), "took <TIMESTAMP> total");
+    }
+
+    #[test]
+    fn real_ipv6_still_redacted() {
+        assert_eq!(normalize("from 2001:db8::1 port 80"), "from <IPV6> port <NUM>");
+        assert_eq!(normalize("peer fe80:0:0:0:202:b3ff:fe1e:8329 up"), "peer <IPV6> up");
+        assert_eq!(normalize("bind ::1 ok"), "bind <IPV6> ok");
+        assert_eq!(normalize("net 2001:db8:: routed"), "net <IPV6> routed");
+    }
+
+    #[test]
+    fn all_decimal_mac_not_read_as_clock() {
+        assert_eq!(normalize("link 00:11:22:33:44:55 up"), "link <MAC> up");
+    }
+
+    #[test]
+    fn slash_dated_timestamps() {
+        // Liquidsoap / nginx error log
+        assert_eq!(
+            normalize("2026/09/24 08:53:42 [next_song:3] ready"),
+            "<TIMESTAMP> [next_song:<NUM>] ready"
+        );
+        // NestJS
+        assert_eq!(normalize("- 09/09/2026, 3:02:01 PM LOG"), "- <TIMESTAMP> LOG");
+        // Common Log Format (Traefik access log)
+        assert_eq!(
+            normalize(r#"- - [24/Sep/2026:08:53:42 +0000] "GET / HTTP/1.1""#),
+            r#"- - [<TIMESTAMP>] "GET / HTTP/<NUM>.<NUM>""#
+        );
+    }
+
+    /// A path whose segments happen to look like a date must still be
+    /// redacted as a path, not split into leaked segments around a
+    /// `<TIMESTAMP>`.
+    #[test]
+    fn date_shaped_path_stays_a_path() {
+        assert_eq!(
+            normalize("dump /backups/12/05/2024 10:00:00 done"),
+            "dump <PATH> <TIMESTAMP> done"
+        );
+    }
+
+    /// Liquidsoap logs one line per track with the full media path. The
+    /// unquoted path pattern stopped at the first space, so the rest of
+    /// the artist/album/title stayed in the template and every song became
+    /// its own template.
+    #[test]
+    fn quoted_path_with_spaces_redacted_whole() {
+        assert_eq!(
+            normalize(r#"Prepared "/var/music/Bobby McFerrin/Simple Pleasures/04 - Don't Worry.flac" (RID 6880)."#),
+            r#"Prepared "<PATH>" (RID <NUM>)."#
+        );
+        assert_eq!(
+            normalize(r#"{"file":\"/srv/My Files/a b.txt\"}"#),
+            r#"{"file":\"<PATH>\"}"#
+        );
+        assert_eq!(normalize("open '/srv/My Files/a b.txt' failed"), "open '<PATH>' failed");
+        // single segment in quotes: not a path, same as the unquoted rule
+        assert_eq!(normalize(r#"cd "/tmp dir" now"#), r#"cd "/tmp dir" now"#);
+    }
+
     /// An external review demonstrated the digit-only pass leaving the
     /// alphabetic body of a credential intact (`password=hunter2SuperSecret`
     /// -> `password=hunter<NUM>SuperSecret`). Locks in the fix from
@@ -274,6 +384,22 @@ mod tests {
             let line = format!("user {}@{}.com logged in", user, domain);
             let out = normalize(&line);
             prop_assert!(!out.contains('@'));
+        }
+
+        #[test]
+        fn quoted_path_never_leaks_segments(
+            a in "[A-Za-z]{3,8}( [A-Za-z]{3,8}){0,3}",
+            b in "[A-Za-z0-9 ._-]{1,30}[A-Za-z0-9]",
+        ) {
+            let line = format!("Prepared \"/music/{a}/{b}.flac\" done");
+            let out = normalize(&line);
+            prop_assert_eq!(out, "Prepared \"<PATH>\" done");
+        }
+
+        #[test]
+        fn clock_never_labeled_ipv6(h in 0u8..24, m in 0u8..60, s in 0u8..60) {
+            let line = format!("at {h:02}:{m:02}:{s:02} ok");
+            prop_assert_eq!(normalize(&line), "at <TIMESTAMP> ok");
         }
 
         #[test]
