@@ -13,11 +13,12 @@
 //              longer version of that reasoning.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-25
+// Version: 0.2.0
 // ==============================================================================
 
 use crate::db::PendingTemplate;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 
 /// Verbatim from spoke_log_analysis.sh lines 229-253 / docs/spec.md §7, with
@@ -52,7 +53,13 @@ Every finding must be traceable to exemplar lines present below. Specifically:
   support a finding, leave it out. An empty section is better than an
   invented one."#;
 
-const TASK_INSTRUCTIONS: &str = r#"You are analyzing server logs for a Spoke infrastructure instance. Below are normalized log templates aggregated from Loki: each one represents one or more structurally-identical raw log lines with variable substrings (timestamps, IPs, UUIDs, etc.) replaced by typed placeholders, plus a count, first/last seen timestamps, and a few verbatim exemplar lines.
+const TASK_INSTRUCTIONS: &str = r#"You are analyzing server logs for a Spoke infrastructure instance. Below are normalized log templates aggregated from Loki: each one represents one or more structurally-identical raw log lines with variable substrings (timestamps, IPs, UUIDs, etc.) replaced by typed placeholders, plus a few verbatim exemplar lines.
+
+This run covers ONE analysis window, stated above the templates. For each template:
+- `count` is the number of occurrences inside this window — use it for volume and severity, and for `total_events`.
+- `lifetime_count` is the total across all prior runs — context only, not this window's volume.
+- `first_seen` / `last_seen` span the template's full history; `new_this_window: true` means it first appeared in this window.
+Describe the window as the period covered; never describe the lifetime span as the length of this run.
 
 ## Your Task
 
@@ -78,7 +85,7 @@ pub fn build_system_prompt(known_patterns: Option<&str>) -> String {
     prompt
 }
 
-pub fn build_user_message(templates: &[PendingTemplate]) -> String {
+pub fn build_user_message(templates: &[PendingTemplate], window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> String {
     let payload: Vec<_> = templates
         .iter()
         .map(|t| {
@@ -87,7 +94,9 @@ pub fn build_user_message(templates: &[PendingTemplate]) -> String {
                 "service": t.service_name,
                 "logger": t.logger,
                 "template": t.template_text,
-                "count": t.total_count,
+                "count": t.window_count,
+                "lifetime_count": t.total_count,
+                "new_this_window": t.first_seen >= window_start,
                 "first_seen": t.first_seen.to_rfc3339(),
                 "last_seen": t.last_seen.to_rfc3339(),
                 "exemplar_lines": t.exemplar_lines,
@@ -98,7 +107,47 @@ pub fn build_user_message(templates: &[PendingTemplate]) -> String {
         .collect();
 
     format!(
-        "## Log Templates\n\n{}",
+        "## Analysis Window\n\n{} .. {}\n\n## Log Templates\n\n{}",
+        window_start.to_rfc3339(),
+        window_end.to_rfc3339(),
         serde_json::to_string_pretty(&payload).unwrap_or_default()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Duration, Utc};
+
+    /// Summaries claimed "10-day run" / "2026-09-09 to 2026-09-24" for a 24h
+    /// window because `count` was the lifetime total. `count` must be this
+    /// window's occurrences, lifetime kept separately, and the window stated.
+    #[test]
+    fn user_message_states_window_and_uses_window_count() {
+        let window_start: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z").unwrap().into();
+        let window_end = window_start + Duration::hours(24);
+        let t = PendingTemplate {
+            template_hash: "a".repeat(64),
+            service_name: "plex".to_string(),
+            logger: "app".to_string(),
+            template_text: "worker <NUM> exited".to_string(),
+            window_count: 7,
+            total_count: 9_999,
+            first_seen: window_start + Duration::hours(2),
+            last_seen: window_start + Duration::hours(3),
+            exemplar_lines: vec![],
+            verdict_classification: None,
+            verdict_note: None,
+        };
+
+        let msg = build_user_message(&[t], window_start, window_end);
+        assert!(msg.contains("2026-09-24T12:00:00+00:00"));
+        assert!(msg.contains("2026-09-25T12:00:00+00:00"));
+
+        let json_start = msg.find('[').unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&msg[json_start..]).unwrap();
+        assert_eq!(payload[0]["count"], 7);
+        assert_eq!(payload[0]["lifetime_count"], 9_999);
+        assert_eq!(payload[0]["new_this_window"], true);
+    }
 }

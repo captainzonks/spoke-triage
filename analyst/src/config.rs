@@ -11,7 +11,7 @@
 //              _FILE handling and needs no extra image layer).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
+// Modified: 2026-09-25
 // Version: 0.1.0
 // ==============================================================================
 
@@ -28,11 +28,11 @@ pub struct Config {
     // (first run, or after a diverse-log day) benign suppression alone
     // doesn't bound template count, and an unbounded prompt can blow past
     // the model's 200K-token context (observed: 2129 templates -> 1.65M
-    // tokens on a real Spoke deployment's first live run). Cap to the
-    // highest-count templates
-    // — those carry the most log volume — and let the long tail roll to
-    // next run, where by-then-classified verdicts will have suppressed the
-    // noisy ones. Not token-exact since exemplar/template_text length
+    // tokens on a real Spoke deployment's first live run). The cap keeps
+    // templates new this window first, then this window's highest counts
+    // (db::select_for_prompt). Templates past the cap are NOT carried over:
+    // occurrences are per-run, so they only reappear if they recur — the
+    // analyst logs how many were cut each run. Not token-exact since exemplar/template_text length
     // varies; 150 is sized off that first run's ~775 tokens/template
     // average with headroom under 200K for system prompt + schema.
     pub max_templates_per_run: i64,

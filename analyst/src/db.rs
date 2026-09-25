@@ -6,8 +6,8 @@
 //              records api_call cost accounting (spec §5/§9).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-25
+// Version: 0.2.0
 // ==============================================================================
 
 use chrono::{DateTime, Utc};
@@ -25,7 +25,12 @@ pub struct PendingTemplate {
     pub service_name: String,
     pub logger: String,
     pub template_text: String,
+    /// Occurrences inside this run's window (template_occurrence.count).
+    pub window_count: i64,
+    /// Lifetime occurrences across all runs (log_template.total_count).
     pub total_count: i64,
+    /// Lifetime first/last seen — `first_seen >= window_start` means the
+    /// template is new this window.
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub exemplar_lines: Vec<String>,
@@ -87,28 +92,25 @@ pub async fn abandon_superseded_runs(pool: &PgPool, current_run_id: i64) -> anyh
     Ok(result.rows_affected())
 }
 
-/// Templates from this run's occurrences, joined to log_template for
-/// full-history first/last_seen + total_count, and left-joined to verdict.
-/// `benign`-classified templates are excluded here — before the API call,
-/// per spec §6.1/§1.1 point 2, not filtered out of the model's response
-/// after the fact. `limit` bounds the single-call prompt to the model's
-/// context window (TRIAGE_MAX_TEMPLATES_PER_RUN, see config.rs) — templates
-/// beyond it wait for a future run.
-pub async fn load_pending_templates(pool: &PgPool, run_id: i64, limit: i64) -> anyhow::Result<Vec<PendingTemplate>> {
+/// Every eligible template from this run's occurrences: this window's count
+/// from template_occurrence, full-history first/last_seen + total_count from
+/// log_template, left-joined to verdict. `benign`-classified templates are
+/// excluded here — before the API call, per spec §6.1/§1.1 point 2, not
+/// filtered out of the model's response after the fact. Capping to the
+/// prompt budget is `select_for_prompt`'s job, not this query's.
+pub async fn load_pending_templates(pool: &PgPool, run_id: i64) -> anyhow::Result<Vec<PendingTemplate>> {
     let rows = sqlx::query(
         "SELECT lt.template_hash, lt.service_name, lt.logger, lt.template_text,
-                lt.total_count, lt.first_seen, lt.last_seen,
+                o.count AS window_count, lt.total_count, lt.first_seen, lt.last_seen,
                 o.exemplar_lines, v.classification, v.note
          FROM template_occurrence o
          JOIN log_template lt ON lt.template_hash = o.template_hash
          LEFT JOIN verdict v ON v.template_hash = o.template_hash
          WHERE o.run_id = $1
            AND (v.classification IS NULL OR v.classification != 'benign')
-         ORDER BY lt.total_count DESC
-         LIMIT $2",
+         ORDER BY lt.template_hash",
     )
     .bind(run_id)
-    .bind(limit)
     .fetch_all(pool)
     .await?;
 
@@ -119,6 +121,7 @@ pub async fn load_pending_templates(pool: &PgPool, run_id: i64, limit: i64) -> a
             service_name: r.get("service_name"),
             logger: r.get("logger"),
             template_text: r.get("template_text"),
+            window_count: r.get("window_count"),
             total_count: r.get("total_count"),
             first_seen: r.get("first_seen"),
             last_seen: r.get("last_seen"),
@@ -127,6 +130,26 @@ pub async fn load_pending_templates(pool: &PgPool, run_id: i64, limit: i64) -> a
             verdict_note: r.get("note"),
         })
         .collect())
+}
+
+/// Picks which templates fit in the single-call prompt
+/// (TRIAGE_MAX_TEMPLATES_PER_RUN, see config.rs). Order: templates first seen
+/// inside this window, then this window's occurrence count, then hash for a
+/// stable tie-break. Ranking by lifetime total_count (the old SQL ORDER BY)
+/// let long-running noise crowd out brand-new errors every run. Templates
+/// past the cap are not analyzed this run; the caller logs how many.
+pub fn select_for_prompt(templates: Vec<PendingTemplate>, window_start: DateTime<Utc>, limit: usize) -> Vec<PendingTemplate> {
+    let mut ranked = templates;
+    ranked.sort_by(|a, b| {
+        let a_new = a.first_seen >= window_start;
+        let b_new = b.first_seen >= window_start;
+        b_new
+            .cmp(&a_new)
+            .then_with(|| b.window_count.cmp(&a.window_count))
+            .then_with(|| a.template_hash.cmp(&b.template_hash))
+    });
+    ranked.truncate(limit);
+    ranked
 }
 
 fn severity_rank(s: &str) -> u8 {
@@ -148,13 +171,13 @@ fn severity_rank(s: &str) -> u8 {
 /// flag, which is a different code path (scanning for past CRITICAL/HIGH
 /// findings with no current counterpart) that isn't built yet — left as a
 /// follow-up, not silently skipped.
-async fn compute_status(pool: &PgPool, template_hash: &str, current_run_id: i64, current_severity: &str) -> anyhow::Result<&'static str> {
+async fn compute_status(conn: &mut sqlx::PgConnection, template_hash: &str, current_run_id: i64, current_severity: &str) -> anyhow::Result<&'static str> {
     let prior_severity: Option<String> = sqlx::query_scalar(
         "SELECT severity FROM finding WHERE template_hash = $1 AND run_id != $2 ORDER BY run_id DESC LIMIT 1",
     )
     .bind(template_hash)
     .bind(current_run_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     Ok(match prior_severity {
@@ -164,10 +187,13 @@ async fn compute_status(pool: &PgPool, template_hash: &str, current_run_id: i64,
     })
 }
 
+/// All-or-nothing: one transaction for the whole batch, so a failed INSERT
+/// can't leave a partial set of findings behind for the run.
 pub async fn write_findings(pool: &PgPool, run_id: i64, findings: &[ScoredFinding]) -> anyhow::Result<Vec<WrittenFinding>> {
+    let mut tx = pool.begin().await?;
     let mut written = Vec::with_capacity(findings.len());
     for f in findings {
-        let status = compute_status(pool, &f.template_hash, run_id, &f.severity).await?;
+        let status = compute_status(&mut tx, &f.template_hash, run_id, &f.severity).await?;
         sqlx::query(
             "INSERT INTO finding (run_id, template_hash, severity, issue, recommendation, status)
              VALUES ($1, $2, $3, $4, $5, $6)",
@@ -178,7 +204,7 @@ pub async fn write_findings(pool: &PgPool, run_id: i64, findings: &[ScoredFindin
         .bind(&f.issue)
         .bind(&f.recommendation)
         .bind(status)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
         written.push(WrittenFinding {
             severity: f.severity.clone(),
@@ -187,6 +213,7 @@ pub async fn write_findings(pool: &PgPool, run_id: i64, findings: &[ScoredFindin
             status,
         });
     }
+    tx.commit().await?;
     Ok(written)
 }
 
@@ -248,4 +275,103 @@ pub async fn month_to_date_spend_usd(pool: &PgPool) -> anyhow::Result<f64> {
     .fetch_one(pool)
     .await?;
     Ok(total.unwrap_or(0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn tmpl(hash: &str, window_count: i64, lifetime: i64, first_seen: DateTime<Utc>) -> PendingTemplate {
+        PendingTemplate {
+            template_hash: hash.to_string(),
+            service_name: "svc".to_string(),
+            logger: "app".to_string(),
+            template_text: "t".to_string(),
+            window_count,
+            total_count: lifetime,
+            first_seen,
+            last_seen: first_seen,
+            exemplar_lines: vec![],
+            verdict_classification: None,
+            verdict_note: None,
+        }
+    }
+
+    fn hashes(ts: &[PendingTemplate]) -> Vec<&str> {
+        ts.iter().map(|t| t.template_hash.as_str()).collect()
+    }
+
+    /// Runs 21-25: ordering by lifetime total_count with LIMIT 150 cut up to
+    /// 100 templates first seen in the window (run 24), so new errors never
+    /// reached the model. New templates must win the cap, then this window's
+    /// volume — lifetime volume must not decide.
+    #[test]
+    fn select_for_prompt_prefers_new_templates_then_window_count() {
+        let window_start = Utc::now() - Duration::hours(24);
+        let old = window_start - Duration::days(10);
+        let new = window_start + Duration::hours(1);
+
+        let selected = select_for_prompt(
+            vec![
+                tmpl("old_loud_lifetime", 5, 1_000_000, old),
+                tmpl("old_loud_window", 500, 600, old),
+                tmpl("new_rare", 1, 1, new),
+                tmpl("new_busier", 3, 3, new),
+            ],
+            window_start,
+            3,
+        );
+
+        assert_eq!(hashes(&selected), vec!["new_busier", "new_rare", "old_loud_window"]);
+    }
+
+    #[test]
+    fn select_for_prompt_is_deterministic_on_ties() {
+        let window_start = Utc::now();
+        let old = window_start - Duration::days(1);
+        let selected = select_for_prompt(vec![tmpl("b", 1, 1, old), tmpl("a", 1, 1, old)], window_start, 10);
+        assert_eq!(hashes(&selected), vec!["a", "b"]);
+    }
+
+    /// Ignored by default — needs the same disposable Postgres as
+    /// collector/tests/migrations.rs (TRIAGE_MIGRATION_TEST_ADMIN_URL).
+    /// Run 23 left 1 of 13 findings behind when the 2nd INSERT failed:
+    /// findings must be written all-or-nothing.
+    #[tokio::test]
+    #[ignore]
+    async fn write_findings_is_all_or_nothing() {
+        let url = std::env::var("TRIAGE_MIGRATION_TEST_ADMIN_URL").expect("TRIAGE_MIGRATION_TEST_ADMIN_URL must be set");
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO triage_app;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::migrate!("../migrations").run(&pool).await.unwrap();
+
+        let run_id: i64 = sqlx::query_scalar(
+            "INSERT INTO run (window_start, window_end, status) VALUES (now() - interval '1 day', now(), 'running') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO log_template (template_hash, service_name, logger, template_text, first_seen, last_seen, total_count)
+             VALUES (repeat('a', 64), 'svc', 'app', 't', now(), now(), 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let finding = |hash: String| ScoredFinding { template_hash: hash, severity: "HIGH".into(), issue: "i".into(), recommendation: None };
+        let result = write_findings(&pool, run_id, &[finding("a".repeat(64)), finding("f".repeat(64))]).await;
+        assert!(result.is_err(), "unknown template_hash must still violate the FK");
+
+        let persisted: i64 = sqlx::query_scalar("SELECT count(*) FROM finding WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(persisted, 0, "a failed batch must not leave partial findings behind");
+    }
 }

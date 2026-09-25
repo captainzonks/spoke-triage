@@ -7,8 +7,8 @@
 //              writes findings. Never receives raw log lines.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-10
-// Version: 0.1.1
+// Modified: 2026-09-25
+// Version: 0.2.0
 // ==============================================================================
 
 mod anthropic;
@@ -26,6 +26,7 @@ use config::Config;
 use mail::{MailTransport, RelayTransport, SendRequest};
 use report_render::ReportContext;
 use sqlx::postgres::PgPoolOptions;
+use std::collections::HashSet;
 use std::time::Instant;
 
 #[tokio::main]
@@ -95,9 +96,15 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let templates = db::load_pending_templates(&pool, run_id, cfg.max_templates_per_run).await?;
+    let eligible = db::load_pending_templates(&pool, run_id).await?;
+    let eligible_count = eligible.len();
+    let templates = db::select_for_prompt(eligible, pending.window_start, cfg.max_templates_per_run.max(0) as usize);
     if templates.is_empty() {
-        eprintln!("no non-benign templates this run");
+        if eligible_count > 0 {
+            eprintln!("{eligible_count} templates eligible but TRIAGE_MAX_TEMPLATES_PER_RUN <= 0 — none sent");
+        } else {
+            eprintln!("no non-benign templates this run");
+        }
         if dry_run {
             println!("=== DRY RUN — run {run_id} — no non-benign templates — no Postgres write ===");
         } else {
@@ -105,11 +112,15 @@ async fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    eprintln!("{} templates after benign suppression", templates.len());
+    eprintln!(
+        "{eligible_count} templates after benign suppression; {} sent to the model ({} over TRIAGE_MAX_TEMPLATES_PER_RUN, not analyzed this run)",
+        templates.len(),
+        eligible_count - templates.len()
+    );
 
     if dry_run {
         let system_text = prompt::build_system_prompt(known_patterns_ref(&cfg).as_deref());
-        let user_text = prompt::build_user_message(&templates);
+        let user_text = prompt::build_user_message(&templates, pending.window_start, pending.window_end);
         println!("=== DRY RUN — run {run_id} — {} templates — no Anthropic call, no mail sent ===", templates.len());
         println!("model: {}  max_tokens: {}  system_prompt: {} chars  user_message: {} chars", cfg.model, cfg.max_tokens, system_text.len(), user_text.len());
         println!("--- user message that would be sent ---");
@@ -119,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
             window_start: pending.window_start,
             window_end: pending.window_end,
             health: "unknown",
-            total_events: templates.iter().map(|t| t.total_count).sum(),
+            total_events: templates.iter().map(|t| t.window_count).sum(),
             summary: "DRY RUN — Anthropic was not called, so no severity classification is shown here. See the user message above for exactly what would have been sent.",
             findings: &[],
             model: &cfg.model,
@@ -134,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let transport = AnthropicTransport::new(cfg.anthropic_api_key.clone());
-    match run_analysis(&transport, &cfg, &templates).await {
+    match run_analysis(&transport, &cfg, &templates, pending.window_start, pending.window_end).await {
         Ok((report, usage, latency_ms)) => {
             let cost = cost::estimate_cost_usd(
                 &cfg.model,
@@ -160,13 +171,25 @@ async fn main() -> anyhow::Result<()> {
                 usage.input_tokens, usage.output_tokens, usage.cache_creation_input_tokens, usage.cache_read_input_tokens
             );
 
-            db::write_run_summary(&pool, run_id, &report.health, &report.summary, report.total_events).await?;
             let health = report.health.clone();
-            let summary = report.summary.clone();
             let total_events = report.total_events;
-            let scored = report.into_scored_findings();
-            eprintln!("{} findings", scored.len());
-            let written = db::write_findings(&pool, run_id, &scored).await?;
+            let model_summary = report.summary.clone();
+            let sent_hashes: HashSet<String> = templates.iter().map(|t| t.template_hash.clone()).collect();
+            let scored = report.into_scored_findings(&sent_hashes);
+            for r in &scored.rejected {
+                eprintln!("dropped finding with unknown template_hash {:?}: {}", r.template_hash, r.issue);
+            }
+            let summary = if scored.rejected.is_empty() {
+                model_summary
+            } else {
+                format!(
+                    "{model_summary}\n\nNote: {} finding(s) were dropped because the model cited a template_hash that was not in this run's input (see the triage journal).",
+                    scored.rejected.len()
+                )
+            };
+            db::write_run_summary(&pool, run_id, &health, &summary, total_events).await?;
+            eprintln!("{} findings", scored.kept.len());
+            let written = db::write_findings(&pool, run_id, &scored.kept).await?;
             db::mark_run_status(&pool, run_id, "completed").await?;
 
             send_report(
@@ -203,9 +226,11 @@ async fn run_analysis(
     transport: &dyn Transport,
     cfg: &Config,
     templates: &[db::PendingTemplate],
+    window_start: chrono::DateTime<chrono::Utc>,
+    window_end: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<(report::Report, anthropic::Usage, i32)> {
     let system_text = prompt::build_system_prompt(known_patterns_ref(cfg).as_deref());
-    let user_text = prompt::build_user_message(templates);
+    let user_text = prompt::build_user_message(templates, window_start, window_end);
 
     let request = MessagesRequest {
         model: cfg.model.clone(),
@@ -291,6 +316,7 @@ mod tests {
             service_name: "plex".to_string(),
             logger: "app".to_string(),
             template_text: "worker <NUM> exited".to_string(),
+            window_count: 5,
             total_count: 5,
             first_seen: Utc::now(),
             last_seen: Utc::now(),
@@ -335,7 +361,7 @@ mod tests {
         let cfg = test_config();
         let templates = vec![test_template(&"a".repeat(64))];
 
-        let (report, usage, _latency_ms) = run_analysis(&mock, &cfg, &templates).await.unwrap();
+        let (report, usage, _latency_ms) = run_analysis(&mock, &cfg, &templates, Utc::now(), Utc::now()).await.unwrap();
 
         assert_eq!(report.health, "degraded");
         assert_eq!(report.total_events, 5);
@@ -361,7 +387,7 @@ mod tests {
         let cfg = test_config();
         let templates = vec![test_template(&"b".repeat(64))];
 
-        assert!(run_analysis(&mock, &cfg, &templates).await.is_err());
+        assert!(run_analysis(&mock, &cfg, &templates, Utc::now(), Utc::now()).await.is_err());
     }
 
     #[tokio::test]
