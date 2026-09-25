@@ -127,14 +127,23 @@ typed placeholders, in this order (earlier patterns take priority over
 later, more general ones, to avoid e.g. an IP octet being swallowed by a
 generic decimal-number pattern):
 
-1. ISO 8601 / RFC 3339 timestamps → `<TIMESTAMP>`
+1. ISO 8601 / RFC 3339 timestamps, and the common non-ISO date-times
+   `YYYY/MM/DD hh:mm:ss` (nginx error log, Liquidsoap), Common Log Format
+   `DD/Mon/YYYY:hh:mm:ss +zzzz` and US `MM/DD/YYYY, h:mm:ss [AM|PM]` →
+   `<TIMESTAMP>`
 2. UUIDs (v1–v5, any dash format) → `<UUID>`
-3. IPv6 addresses → `<IPV6>`
+3. IPv6 addresses (all eight groups, or containing `::`) → `<IPV6>`; then
+   bare clock values `hh:mm:ss[.fff]` → `<TIMESTAMP>`. The clock pass runs
+   after IPv6 and MAC so a real address claims its digits first, and IPv6
+   requires the eight-group or `::` shape so a clock value is never
+   labelled an address
 4. IPv4 addresses → `<IPV4>`
 5. MAC addresses → `<MAC>`
 6. Email addresses → `<EMAIL>`
 7. URLs (`scheme://...`) → `<URL>`
-8. Absolute file paths (`/...` with ≥2 segments) → `<PATH>`
+8. Absolute file paths (`/...` with ≥2 segments) → `<PATH>`. A quoted path
+   (`"..."`, `\"...\"`, `'...'`) is taken whole up to the closing quote,
+   spaces included; an unquoted path ends at the first space
 9. Labeled credential fields (`password=`, `token:`, `api_key=`, etc.) →
    `<SECRET>` (best-effort, see ADR-016 — must run before 12/14 or a digit
    inside the value gets consumed first, leaving the rest of the secret

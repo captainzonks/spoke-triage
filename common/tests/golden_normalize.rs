@@ -21,22 +21,17 @@
 //              OpenAPI example UUID (3fa85f64-...) — everything else,
 //              including timestamps and formatting, is verbatim.
 //
-//              Two lines below (Redis, NestJS) demonstrate a known quirk, not
-//              a defect: bare `HH:MM:SS` time-of-day (no ISO date component,
-//              e.g. Redis's own log format) and slash-delimited `MM/DD/YYYY`
-//              dates are outside the ISO-8601/RFC-3339 timestamp pattern
-//              (spec §4 item 1) and get opportunistically consumed by the
-//              IPv6 or path patterns instead (three colon-separated hex-safe
-//              groups is structurally indistinguishable from IPv6; two
-//              slash-delimited segments is structurally indistinguishable
-//              from an absolute path). The redaction guarantee still holds —
-//              nothing raw survives, the line still collapses to a stable
-//              template — the placeholder is just mislabeled. Locked in here
-//              rather than "fixed", since the fix scope (a real date/time
-//              grammar) is outside spec §4's stated pattern list.
+//              The Redis and NestJS lines originally locked in a quirk:
+//              bare `HH:MM:SS` came out as `<IPV6>` and `MM/DD/YYYY` as
+//              `<NUM><PATH>`. Both now normalize to `<TIMESTAMP>` (spec §4
+//              item 1). The Liquidsoap line was added 2026-09-25, captured
+//              from AzuraCast via the triage DB's exemplar_lines, after
+//              per-track lines like it were found producing one template
+//              per song.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-25
+// Version: 0.2.0
 // ==============================================================================
 
 use spoke_triage_common::normalize::normalize;
@@ -84,19 +79,25 @@ const GOLDEN: &[(&str, &str)] = &[
         r#"{"filename":"src<PATH>","level":"info","line_number":<NUM>,"pid":<NUM>,"target":"authentik::outpost::event","thread_id":"ThreadId(<NUM>)","thread_name":"tokio-<NUM>","timestamp":"<TIMESTAMP>","event":"connected to websocket","outpost":"<UUID>"}"#,
     ),
     // Redis: `pid=7` labeled-PID vs. `commit=00000000` (8 hex chars, hits
-    // the hex-run pattern) in the same line — and the known bare-time-of-day
-    // quirk from the file header (`22:18:42.696` -> `<IPV6>.<NUM>`).
+    // the hex-run pattern) in the same line, and a bare time of day
+    // (`22:18:42.696`) with no date.
     (
         "7:C 09 Sep 2026 22:18:42.696 * Redis version=8.4.0, bits=64, commit=00000000, modified=1, pid=7, just started",
-        "<NUM>:C <NUM> Sep <NUM> <IPV6>.<NUM> * Redis version=<NUM>.<NUM>.<NUM>, bits=<NUM>, commit=<HEX>, modified=<NUM>, pid=<PID>, just started",
+        "<NUM>:C <NUM> Sep <NUM> <TIMESTAMP> * Redis version=<NUM>.<NUM>.<NUM>, bits=<NUM>, commit=<HEX>, modified=<NUM>, pid=<PID>, just started",
     ),
     // NestJS/Immich: raw ANSI color codes survive normalize() untouched (not
-    // a redaction target — not sensitive), and the `MM/DD/YYYY, H:MM:SS PM`
-    // timestamp hits the known slash/colon quirk from the file header
-    // instead of <TIMESTAMP>. Nothing raw survives either way.
+    // a redaction target — not sensitive), and the US-style
+    // `MM/DD/YYYY, H:MM:SS PM` timestamp.
     (
         "\x1b[32m[Nest] 8  - \x1b[39m09/09/2026, 3:02:01 PM \x1b[32m    LOG\x1b[39m \x1b[33m[Microservices:WebsocketRepository]\x1b[39m \x1b[32mInitialized websocket server\x1b[39m",
-        "\x1b[<NUM>m[Nest] <NUM>  - \x1b[<NUM>m<NUM><PATH>, <IPV6> PM \x1b[<NUM>m    LOG\x1b[<NUM>m \x1b[<NUM>m[Microservices:WebsocketRepository]\x1b[<NUM>m \x1b[<NUM>mInitialized websocket server\x1b[<NUM>m",
+        "\x1b[<NUM>m[Nest] <NUM>  - \x1b[<NUM>m<TIMESTAMP> \x1b[<NUM>m    LOG\x1b[<NUM>m \x1b[<NUM>m[Microservices:WebsocketRepository]\x1b[<NUM>m \x1b[<NUM>mInitialized websocket server\x1b[<NUM>m",
+    ),
+    // Liquidsoap (AzuraCast): slash-dated timestamp, and a quoted media path
+    // with spaces that must collapse whole. Before the fix this kept
+    // everything after the first space ("Pleasures/04 - ...") in the template.
+    (
+        r#"station_7_backend stdout | 2026/09/24 08:53:42 [next_song:3] Prepared "/var/azuracast/import_music/Bobby McFerrin/Simple Pleasures/04 - Simple_Pleasures.flac" (RID 6880)."#,
+        r#"station_<NUM>_backend stdout | <TIMESTAMP> [next_song:<NUM>] Prepared "<PATH>" (RID <NUM>)."#,
     ),
 ];
 
