@@ -1,0 +1,91 @@
+# ==============================================================================
+# trivy.yml - container image scan for spoke-triage
+# ==============================================================================
+# Description: Builds the three spoke-triage images on the GitHub runner and
+#              scans each with Trivy, run from its official image pinned by
+#              digest (no marketplace action). Images are handed to Trivy as
+#              `docker save` tarballs, so the scanner container gets no
+#              Docker socket. Fails on fixable HIGH/CRITICAL findings and
+#              reports everything else. Runs weekly as well, since new CVEs
+#              land without a code change. Deploys nothing (ADR-019, ADR-022).
+# Author: Matt Barham
+# Created: 2026-09-26
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+# Documentation:
+#   - https://trivy.dev/latest/docs/target/container_image/#tar-files
+#   - https://github.com/aquasecurity/trivy/releases/tag/v0.74.0
+# ==============================================================================
+
+name: trivy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: "ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+
+jobs:
+  scan:
+    name: build + trivy scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Build contexts, Dockerfiles and args mirror docker-compose.yml.
+      # USER_ID/GROUP_ID are left at the Dockerfile defaults (1000/968).
+      # --pull: always scan the current upstream base, never a cached one.
+      - name: Build images
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/images"
+          common_args=(--build-arg "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                       --build-arg "VCS_REF=${GITHUB_SHA}"
+                       --build-arg "VERSION=ci")
+          docker build --pull "${common_args[@]}" -t triage-egress-guard:ci \
+            -f dockerfiles/triage-egress-guard/Dockerfile dockerfiles/triage-egress-guard/
+          docker build --pull "${common_args[@]}" -t triage-collector:ci \
+            -f dockerfiles/triage-collector/Dockerfile .
+          docker build --pull "${common_args[@]}" -t triage-analyst:ci \
+            -f dockerfiles/triage-analyst/Dockerfile .
+          for img in triage-egress-guard triage-collector triage-analyst; do
+            docker save -o "${RUNNER_TEMP}/images/${img}.tar" "${img}:ci"
+          done
+
+      - name: Scan images
+        run: |
+          set -uo pipefail
+          mkdir -p "${RUNNER_TEMP}/trivy-cache"
+          trivy() {
+            docker run --rm \
+              -v "${RUNNER_TEMP}/trivy-cache:/cache" \
+              -v "${RUNNER_TEMP}/images:/images:ro" \
+              "${TRIVY_IMAGE}" image --cache-dir /cache --no-progress "$@"
+          }
+          failed=()
+          for img in triage-egress-guard triage-collector triage-analyst; do
+            echo "::group::${img}: full report (all severities, informational)"
+            trivy --input "/images/${img}.tar" --scanners vuln --exit-code 0
+            echo "::endgroup::"
+            echo "=== ${img}: gate (HIGH/CRITICAL with a fix available) ==="
+            if ! trivy --input "/images/${img}.tar" --scanners vuln --skip-db-update \
+                 --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1; then
+              failed+=("${img}")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Fixable HIGH/CRITICAL vulnerabilities in: ${failed[*]}"
+            exit 1
+          fi
