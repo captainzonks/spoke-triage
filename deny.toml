@@ -1,0 +1,56 @@
+# ==============================================================================
+# deny.toml - cargo-deny policy for spoke-triage
+# ==============================================================================
+# Description: Dependency policy checked in CI by cargo-deny: RustSec
+#              advisories, banned/duplicate/wildcard dependencies, allowed
+#              sources (crates.io only) and the license allowlist. The
+#              license list is exactly what `cargo deny list` reports for
+#              this Cargo.lock; see ADR-022.
+# Author: Matt Barham
+# Created: 2026-09-26
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+# Documentation:
+#   - https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+# ==============================================================================
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory DB. Vulnerabilities always fail; unmaintained and unsound
+# notices fail for any crate in the graph; yanked versions fail.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

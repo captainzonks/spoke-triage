@@ -1,15 +1,15 @@
 # ==============================================================================
 # architecture_decisions.md - spoke-triage ADR log
 # ==============================================================================
-# Description: Architecture decision records for spoke-triage. Numbering
-#              continues from spoke's docs/architecture_decisions.md
-#              (highest existing: ADR-012), since spoke-triage is
-#              standalone-first (ADR-008 pattern) and keeps its own ADR log,
-#              cross-referenced from spoke rather than merged into it.
+# Description: Architecture decision records for spoke-triage. Numbers
+#              come from the single ADR sequence shared by spoke and every
+#              module (spoke docs/module_development.md), since spoke-triage
+#              is standalone-first (ADR-008 pattern) and keeps its own ADR
+#              log, cross-referenced from spoke rather than merged into it.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-19
-# Version: 0.4.0
+# Modified: 2026-09-26
+# Version: 0.5.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -379,3 +379,118 @@ zero findings.
 - `collector/tests/migrations.rs` gains a case asserting the constraint
   accepts `abandoned` and still rejects unknown statuses.
 
+
+## ADR-022: Secret, Dependency and Image Scanning in Test-Only CI
+
+**Decision**: Add three scanning workflows and Dependabot version updates
+alongside `ci.yml`, and harden `ci.yml` to the hub's `gitleaks.yml`
+pattern:
+
+| Workflow | Tool and version | Gate |
+|---|---|---|
+| `gitleaks.yml` | gitleaks v8.30.1 | Any finding in full git history fails (`--redact --exit-code 1`) |
+| `cargo_deny.yml` | cargo-deny 0.20.2 | Advisories, bans, licenses and sources all must pass |
+| `trivy.yml` | Trivy 0.74.0 | Fails on HIGH/CRITICAL findings that have a fix; everything else is reported |
+| `.github/dependabot.yml` | Dependabot | Weekly PRs for `cargo`, `github-actions`, `docker`; minor and patch grouped |
+
+`cargo_deny.yml` and `trivy.yml` also run weekly on a schedule, because
+new advisories and CVEs land without any change to this repo.
+
+**Context**: ADR-019 allowed test-only CI because it deploys nothing and
+needs no host access. That boundary covers scanning equally well, and the
+repo had none: no secret scan, no dependency audit, and no image scan,
+while shipping three container images and a crate graph that includes a
+TLS stack. `ci.yml` also referenced actions by mutable tag (`@v4`,
+`@stable`) and had no `permissions` block. The first cargo-deny run found
+RUSTSEC-2026-0285 in `rustls` 0.23.44 (TLS 1.3 handshake messages accepted
+across encryption-level boundaries), fixed by a lockfile bump to 0.23.45
+in the same change set.
+
+**Rationale**:
+- **Severity gates.** Secrets and RustSec vulnerabilities have no
+  acceptable level, so both gate on any finding. cargo-deny also denies
+  yanked crates, unmaintained or unsound notices, wildcard version
+  requirements and any source other than crates.io; duplicate versions
+  only warn, since they come from transitive requirements this repo
+  doesn't control. Trivy gates on fixable HIGH/CRITICAL only
+  (`--ignore-unfixed`): a finding with no fixed package can't be acted on,
+  and failing on it would leave CI red with no remedy. The full
+  all-severity table is still printed on every run.
+- **License allowlist.** `deny.toml` allows exactly the 11 licenses
+  `cargo deny list` reported for this `Cargo.lock` on 2026-09-26:
+  Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause,
+  BSL-1.0, CDLA-Permissive-2.0, ISC, MIT, Unicode-3.0, Unlicense, Zlib.
+  None is copyleft. A new license in the graph fails the check and needs
+  a deliberate decision.
+- **Workspace path dependencies.** cargo-deny counts
+  `spoke-triage-common = { path = "../common" }` as a wildcard unless the
+  crate is unpublishable. The four member crates now set
+  `publish = false`, which is accurate (they ship as container images,
+  never to crates.io) and lets `allow-wildcard-paths` apply.
+- **Fixture allowlist: `.gitleaksignore` fingerprints, not inline
+  `gitleaks:allow`.** A full-history scan reports each secret at the
+  commit that introduced it (`1dce22e`), where the line has no allow
+  comment. An inline comment added now would silence only future commits
+  and leave the historical findings failing. The two fingerprints
+  (`commit:file:rule:line`, rules `github-pat` and `generic-api-key` in
+  `common/src/normalize.rs`) are as narrow as gitleaks allows: no file,
+  path or rule is allowlisted, so a new secret in the same file still
+  fails. The AWS documented example key in the same tests is not
+  reported by gitleaks at all.
+- **Pinning.** Every action is pinned to a full commit SHA with its
+  version in a trailing comment, resolved on 2026-09-26 with
+  `git ls-remote` against the upstream release tag. `dtolnay/rust-toolchain`
+  publishes no release tags, so it is pinned to the head of its `stable`
+  branch; the Rust toolchain it installs still tracks current stable,
+  which keeps `cargo test` and `cargo clippy` behaving as under ADR-019.
+  Scanner images are pinned by tag and digest. cargo-deny is installed
+  from its release tarball and checked against a SHA-256 written into the
+  workflow, not against the `.sha256` file published beside it, so a
+  replaced release asset fails the job. The official
+  `cargo-deny-action` was not used, to keep to one pattern (no
+  third-party actions beyond checkout, cache and the toolchain).
+- **No marketplace scanner actions.** In March 2026 an attacker
+  force-pushed 76 of 77 `aquasecurity/trivy-action` tags and all
+  `setup-trivy` tags to credential-stealing code, and published malicious
+  Trivy v0.69.4 (plus v0.69.5 and v0.69.6 Docker Hub images)
+  ([GHSA-69fq-xp46-6x23](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23)).
+  Any workflow that referenced those tags ran the attacker's code. Running
+  the official image by digest removes the mutable-tag path. Trivy 0.74.0
+  was released 2026-08-14, after the incident, and is outside the affected
+  versions.
+- **Why this still fits ADR-019.** Every job runs on GitHub-hosted
+  runners with `permissions: contents: read`, `persist-credentials:
+  false`, no repository secrets and no `pull_request_target`. The Trivy
+  job builds images with the runner's own Docker daemon, never this
+  deployment's, and hands them to the scanner as `docker save` tarballs,
+  so the scanner container gets no Docker socket at all. Nothing is
+  pushed or deployed.
+
+**Versions verified** (2026-09-26):
+
+| Tool | Version | Pin | Checked at |
+|---|---|---|---|
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | GitHub releases, `git ls-remote` |
+| actions/cache | v6.1.0 | `55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | GitHub releases, `git ls-remote` |
+| dtolnay/rust-toolchain | `stable` branch | `6bed0761d98439e5a578e2877258200ad565ba87` | GitHub branches API |
+| gitleaks | v8.30.1 | `sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f` | GitHub releases, `ghcr.io` manifest |
+| Trivy | 0.74.0 | `sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969` | GitHub releases, `ghcr.io` manifest |
+| cargo-deny | 0.20.2 | tarball SHA-256 `9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f` | GitHub releases |
+
+**Consequences**:
+- Dependabot security alerts are a repository setting, enabled separately
+  from this change; `.github/dependabot.yml` only configures version
+  updates.
+- Scheduled runs can turn red without a code change. That is the purpose
+  of the schedule, not a flake.
+- The Dockerfiles use floating bases (`rust:1-slim`, `alpine:latest`), so
+  Trivy results move with upstream and Dependabot can't propose a bump
+  for `latest`. `trivy.yml` builds with `--pull` so it always scans the
+  current base; a locally cached base can be older than what CI sees.
+  Pinning the bases is left as follow-up work.
+- Trivy scans OS packages only here. The Rust binaries are not built with
+  `cargo auditable`, so crate vulnerabilities are covered by cargo-deny,
+  not by the image scan.
+- CodeQL was not added. Rust has been generally available in CodeQL since
+  2025-10-14 (CodeQL CLI 2.23.3), so it can be added later as its own
+  decision.
