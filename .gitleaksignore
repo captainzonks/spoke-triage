@@ -1,0 +1,19 @@
+# ==============================================================================
+# .gitleaksignore - gitleaks finding allowlist for spoke-triage
+# ==============================================================================
+# Description: Exact finding fingerprints (commit:file:rule:line) for the
+#              deliberate fake credentials in common/src/normalize.rs tests
+#              that exercise the redaction filter. Fingerprints are scoped
+#              to the introducing commit, so a new real secret anywhere,
+#              including a new line in the same file, is still reported.
+#              See ADR-022 for why fingerprints and not inline comments.
+# Author: Matt Barham
+# Created: 2026-09-26
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+
+# known_credential_prefix_redacted: fabricated ghp_ token
+1dce22e8525c28faa037a30fe44e8f23339fdfdf:common/src/normalize.rs:github-pat:224
+# labeled_credential_redacted: fake "token:" value
+1dce22e8525c28faa037a30fe44e8f23339fdfdf:common/src/normalize.rs:generic-api-key:214
