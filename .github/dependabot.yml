@@ -1,0 +1,50 @@
+# ==============================================================================
+# dependabot.yml - Dependabot version updates for spoke-triage
+# ==============================================================================
+# Description: Weekly version-update PRs for Cargo crates, GitHub Actions
+#              (SHA pins are updated along with their version comments) and
+#              Dockerfile base images. Minor and patch updates are grouped
+#              into one PR per ecosystem; majors arrive individually.
+#              Security alerts are a separate repository setting (ADR-022).
+# Author: Matt Barham
+# Created: 2026-09-26
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+# Documentation:
+#   - https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+# ==============================================================================
+
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/dockerfiles/*"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docker-minor-patch:
+        update-types: ["minor", "patch"]
