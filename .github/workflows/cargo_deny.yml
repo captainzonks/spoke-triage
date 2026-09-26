@@ -1,0 +1,63 @@
+# ==============================================================================
+# cargo_deny.yml - dependency policy check for spoke-triage
+# ==============================================================================
+# Description: Runs cargo-deny (advisories, bans, licenses, sources) against
+#              Cargo.lock on every push and PR, and weekly so new RustSec
+#              advisories surface without a code change. cargo-deny comes
+#              from its GitHub release tarball, verified against a pinned
+#              SHA-256. Deploys nothing and needs no host access (ADR-019,
+#              ADR-022).
+# Author: Matt Barham
+# Created: 2026-09-26
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+# Documentation:
+#   - https://embarkstudios.github.io/cargo-deny/
+#   - https://github.com/EmbarkStudios/cargo-deny/releases/tag/0.20.2
+# ==============================================================================
+
+name: cargo-deny
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_DENY_VERSION: "0.20.2"
+  # SHA-256 of cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+  CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+
+jobs:
+  deny:
+    name: cargo-deny check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch (action has no release tags)
+
+      - name: Install cargo-deny (checksum-verified release binary)
+        run: |
+          set -euo pipefail
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "${RUNNER_TEMP}/${name}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${RUNNER_TEMP}/${name}.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${name}.tar.gz" -C "${RUNNER_TEMP}"
+          install -m 0755 "${RUNNER_TEMP}/${name}/cargo-deny" "${HOME}/.cargo/bin/cargo-deny"
+          cargo deny --version
+
+      - name: cargo deny check
+        run: cargo deny --locked check

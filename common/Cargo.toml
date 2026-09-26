@@ -1,9 +1,23 @@
+# ==============================================================================
+# common/Cargo.toml - spoke-triage-common crate manifest
+# ==============================================================================
+# Description: Package manifest for the spoke-triage-common workspace member.
+#              publish = false: shipped as a container image, never to
+#              crates.io; also lets cargo-deny accept the workspace path
+#              dependency (ADR-022).
+# Author: Matt Barham
+# Created: 2026-09-10
+# Modified: 2026-09-26
+# Version: 0.1.0
+# ==============================================================================
+
 [package]
 name = "spoke-triage-common"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 regex.workspace = true
