@@ -14,8 +14,8 @@
 //              standalone DATABASE_URL (the container never has one set).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.1.1
 // ==============================================================================
 
 use sqlx::postgres::PgPoolOptions;
@@ -76,7 +76,7 @@ async fn verdict_set(args: &[String]) -> anyhow::Result<()> {
     let set_by = set_by.or_else(|| std::env::var("USER").ok()).unwrap_or_else(|| "unknown".to_string());
 
     let database_url = spoke_triage_common::secret::build_postgres_url("TRIAGE_POSTGRES_DB")?;
-    let pool = PgPoolOptions::new().max_connections(1).connect(&database_url).await?;
+    let pool = PgPoolOptions::new().max_connections(1).connect(database_url.expose()).await?;
 
     sqlx::query(
         "INSERT INTO verdict (template_hash, classification, note, set_by, set_at)

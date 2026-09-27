@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-27
-# Version: 0.6.1
+# Version: 0.7.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -531,11 +531,16 @@ scans OS packages only here"); this ADR closes it.
   ([build options](https://docs.github.com/en/code-security/reference/code-scanning/codeql/codeql-build-options-and-steps-for-compiled-languages)),
   so the job needs no toolchain step and never compiles the workspace.
 - **What CodeQL doesn't cover.** CodeQL's default threat model is `remote`:
-  environment variables and command-line arguments are `local` sources
-  and are ignored. spoke-triage's inputs are Loki responses and its own
-  configuration, so taint queries only fire on data read from the
-  network. Structural queries (a hard-coded `true` passed to a certificate
-  check, weak algorithms) fire regardless. The proof run below used one.
+  environment variables and command-line arguments are `local` sources,
+  so injection-style taint queries only fire on data read from the
+  network. Two kinds of query ignore the threat model. Structural queries
+  (a hard-coded `true` passed to a certificate check, a plain-`http` URL)
+  fire on the code's shape; the proof run below used one. Sensitive-data
+  queries (cleartext logging and transmission) take as sources values
+  CodeQL recognizes as secrets by name, such as the result of
+  `read_secret` or a variable called `password`, and they fired on `main`
+  from its first analysis (ADR-026). *Corrected 2026-09-27: this bullet
+  first said taint queries fire only on network data.*
 - **Default suite, not `security-extended`.** The default suite is the
   high-precision set GitHub runs for default setup. `security-extended`
   adds lower-precision queries, and on a small workspace with no remote
@@ -654,3 +659,97 @@ scans OS packages only here"); this ADR closes it.
 - The base images are still floating (`rust:1-slim`, `alpine:latest`), so
   SBOM contents move with upstream between runs. Pinning them is separate
   work.
+
+## ADR-026: Secrets Kept Out of Config Behind a Redacting Type; Loki Over Internal HTTP Accepted
+
+**Decision**: Move every secret out of the `Config` structs into a separate
+`Secrets` struct holding a `Secret` newtype, and accept plain HTTP to Loki
+on the internal Docker network as a recorded risk:
+
+| Alert | Rule | Location | Outcome |
+|---|---|---|---|
+| #3–#8 | `rust/cleartext-logging` | `analyst/src/main.rs:74, 91, 116, 124, 125, 143` | Fixed by the secrets split |
+| #9 | `rust/cleartext-transmission` | `collector/src/loki.rs:88` | Fixed by the secrets split |
+| #2 | `rust/non-https-url` | `collector/src/loki.rs:88` | Dismissed as "won't fix", with this ADR as the reason |
+
+**Context**: The first CodeQL analysis of `main` after ADR-025 landed
+(`52ef73c`, 2026-09-27) raised eight alerts. They didn't show up on the
+ADR-025 PR itself because CodeQL reports on a pull request only the
+alerts inside the lines that PR changed
+([changelog, 2025-05-28](https://github.blog/changelog/2025-05-28-incremental-security-analysis-makes-codeql-up-to-20-faster-in-pull-requests/)),
+and that PR didn't touch the flagged lines. The ADR-025 report checked
+`main` for open alerts before the PR merged, when `main` had never been
+analyzed, so its "0 open alerts on `main`" was true but meant nothing.
+
+The SARIF data-flow paths show one cause for seven of the eight. In both
+binaries, `Config::from_env` built a single struct from `read_secret(...)`
+(the Anthropic API key), `build_postgres_url(...)` (a URL with the
+`triage_app` password in it) and ordinary settings. CodeQL's Rust analysis
+tainted the whole struct returned through `?`, not just the secret fields,
+so reading any setting from `cfg` carried the taint: `cfg.monthly_budget_usd`
+into the report text, `cfg.max_templates_per_run` into a printed count,
+`cfg.model` and `cfg.max_tokens` into the dry-run line, and in the
+collector `cfg.loki_base_url` into the Loki request. None of those lines
+printed or sent a secret. But the struct really was a hazard: any future
+`{:?}` of `Config`, or a log of it during debugging, would have leaked
+both secrets.
+
+**Rationale**:
+- **Separate the secrets rather than silence the alerts.** Dismissing
+  seven false positives would leave the struct that caused them, and the
+  real risk with it. With the secrets in their own struct, `Config`
+  holds nothing sensitive and can be logged freely.
+- **The `Secret` newtype** (`common/src/secret.rs`) wraps a `String` and:
+  - does not implement `Display`, so `{}` doesn't compile;
+  - has a `Debug` that prints `Secret([REDACTED])`, so `{:?}`, including
+    through a struct that derives `Debug` (both `Secrets` structs do),
+    shows no value;
+  - does not implement `Clone`, so copies are deliberate;
+  - exposes the value only through `expose()`, which is called at exactly
+    four places: the `PgPoolOptions::connect` calls in the collector, the
+    analyst and `triage-cli`, and the `x-api-key` header.
+  `read_secret` and `build_postgres_url` return `Secret` directly, so a
+  secret is wrapped from the moment it's read.
+- **Behaviour is unchanged.** Same environment variables, same `_FILE`
+  handling, same connection strings; `Secrets` is read before `Config`, as
+  the secret fields were read first before, so the same missing variable
+  produces the same first error.
+- **Error messages carry no values.** `read_secret`'s errors name the
+  variable and file path, never the contents. That was already true and
+  is unchanged.
+- **No new crates.** `secrecy` and `zeroize` would add the same guarantees
+  plus memory wiping. The newtype is about 20 lines and covers the logging
+  and debugging leaks, which are the realistic ones here.
+
+**What it doesn't protect against**:
+- **Memory isn't zeroized.** The secret stays in the process's memory
+  until it's overwritten, and a core dump or memory read could reveal it.
+  Both binaries are short-lived batch jobs running as a non-root user,
+  which limits this. Adopting `zeroize` is a possible follow-up if the
+  process model changes (for example, a long-running service).
+- **`expose()` can still be misused.** A future `println!("{}",
+  secrets.database_url.expose())` compiles. The single, greppable accessor
+  makes that easy to spot in review, and CodeQL's cleartext-logging query
+  would still flag it.
+
+**Accepted risk: Loki over internal HTTP (#2).** `TRIAGE_LOKI_BASE_URL`
+defaults to `http://loki:3100`. The collector reaches Loki over the
+internal Docker network, Loki has no public route (removed 2026-09-25),
+and the request carries no credentials: only the tenant header
+`X-Scope-OrgID: fake`. TLS here would protect a read-only query between
+two containers on the same host. The alert is dismissed as "won't fix"
+with a comment pointing here. Revisit if:
+- Loki becomes reachable from off the host's internal networks (a public
+  route, a published port, or a Loki on another machine); or
+- the request gains credentials (Loki auth, a real tenant secret, a
+  token), since those would then cross the network in cleartext.
+
+**Consequences**:
+- `Config` in both binaries can be logged or printed for debugging
+  without risk.
+- Future sensitive-data alerts should be read path first: if the source
+  is a `Secret`, the fix is almost always to stop the value reaching the
+  sink, not to dismiss.
+- Checking `main` for alerts is only meaningful after `main` has been
+  analyzed. PR analyses show only alerts on changed lines, so a clean PR
+  says nothing about existing code.
