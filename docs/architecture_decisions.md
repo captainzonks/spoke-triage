@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-27
-# Version: 0.7.0
+# Version: 0.8.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -753,3 +753,41 @@ with a comment pointing here. Revisit if:
 - Checking `main` for alerts is only meaningful after `main` has been
   analyzed. PR analyses show only alerts on changed lines, so a clean PR
   says nothing about existing code.
+
+## ADR-027: No Prompt Caching for a Once-a-Day Call
+
+**Decision**: Stop setting `cache_control` on the analyst's system prompt.
+This supersedes spec §1.1 point 6 ("prompt caching is mandatory") and the
+§9 caching bullet, both now marked superseded in `docs/spec.md`.
+
+**Context**: The analyst makes one Messages API call per run, and runs
+once a day. Anthropic's default cache lifetime is 5 minutes. Across all 27
+recorded calls (2026-09-10 to 2026-09-27) `api_call.cache_read_tokens` is
+0: nothing was ever read back. Until 2026-09-27 the system prompt was also
+under Haiku 4.5's minimum cacheable size, so caching was silently off.
+When the known-patterns file grew past that minimum, the first cache write
+appeared (5,389 tokens on run 31). A write is billed at 1.25× the input
+rate, so from then on caching only added cost.
+
+**Rationale**:
+- Caching pays off only when a later request reuses the prefix within the
+  cache lifetime. A single daily call never does, so every write is pure
+  overhead.
+- The 1-hour cache lifetime doesn't change that. It bills writes at 2× and
+  would still expire long before the next day's run.
+- Removing the field is simpler than keeping it and explaining why it
+  never helps. The test that required it now asserts the opposite: the
+  request body contains no `cache_control`.
+
+**Consequences**:
+- The cost is roughly $0.10 per run (27 calls, $2.64 total, $0.098
+  average). It's driven by the per-run limit on log patterns
+  (`TRIAGE_MAX_TEMPLATES_PER_RUN`, default 150) and by `benign` verdicts,
+  not by caching.
+- The `Usage` parsing, the `api_call` cache columns and the cache rates in
+  `cost.rs` stay, so any cache tokens the API ever reports are still
+  recorded and costed.
+- Revisit if a run starts making more than one call within the cache
+  lifetime. That could come from splitting templates across several calls
+  instead of capping them, or from a retry loop that resends the same
+  system prompt.

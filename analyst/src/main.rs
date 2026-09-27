@@ -8,7 +8,7 @@
 // Author: Matt Barham
 // Created: 2026-09-09
 // Modified: 2026-09-27
-// Version: 0.2.1
+// Version: 0.2.2
 // ==============================================================================
 
 mod anthropic;
@@ -21,7 +21,7 @@ mod report;
 mod report_render;
 mod schema;
 
-use anthropic::{AnthropicTransport, CacheControl, MessageParam, MessagesRequest, SystemBlock, ToolChoice, Transport};
+use anthropic::{AnthropicTransport, MessageParam, MessagesRequest, SystemBlock, ToolChoice, Transport};
 use config::{Config, Secrets};
 use mail::{MailTransport, RelayTransport, SendRequest};
 use report_render::ReportContext;
@@ -236,14 +236,10 @@ async fn run_analysis(
     let request = MessagesRequest {
         model: cfg.model.clone(),
         max_tokens: cfg.max_tokens,
-        // Cache the system block once it clears the per-model minimum
-        // cacheable-token floor (spec §9/§1.1 point 6); below that floor
-        // Anthropic just serves it uncached, so this is safe to always set.
-        system: vec![SystemBlock {
-            block_type: "text",
-            text: system_text,
-            cache_control: Some(CacheControl { control_type: "ephemeral" }),
-        }],
+        // No cache_control: the analyst makes one call a day, so a cached
+        // system prompt is never read back before it expires, and each
+        // write costs 25% more than plain input (ADR-027).
+        system: vec![SystemBlock { block_type: "text", text: system_text }],
         messages: vec![MessageParam { role: "user", content: user_text }],
         tools: vec![schema::triage_report_tool()],
         tool_choice: ToolChoice::Tool { name: schema::TRIAGE_REPORT_TOOL_NAME.to_string() },
@@ -372,7 +368,8 @@ mod tests {
             ToolChoice::Tool { name } => assert_eq!(name, schema::TRIAGE_REPORT_TOOL_NAME),
         }
         assert_eq!(sent[0].tools.len(), 1);
-        assert!(sent[0].system[0].cache_control.is_some());
+        let body = serde_json::to_string(&sent[0]).unwrap();
+        assert!(!body.contains("cache_control"), "request must not ask for prompt caching (ADR-027)");
         assert!(sent[0].messages[0].content.contains(&"a".repeat(64)));
     }
 

@@ -9,7 +9,7 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
 Author: Matt Barham
 Created: 2026-09-09
 Modified: 2026-09-27
-Version: 0.4.0
+Version: 0.4.1
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -131,8 +131,12 @@ severity, the database decides novelty.
 - Default model `claude-haiku-4-5` — classification over pre-aggregated,
   pre-redacted input doesn't need a larger tier; escalate only if eval data
   shows under-classification on real logs.
-- Prompt caching on the static system prompt (evidence rules + known
-  patterns).
+- One model call per run: the ~150 highest-priority log patterns (new
+  ones first), after `benign` verdicts are filtered out. About $0.10 a run
+  on Haiku 4.5 at the default cap of 150 patterns.
+- No prompt caching: with one call a day the cache expires before it's
+  ever read, and each cache write costs 25% more than plain input
+  ([ADR-027](docs/architecture_decisions.md#adr-027-no-prompt-caching-for-a-once-a-day-call)).
 - Hard monthly budget, default $20 via `TRIAGE_MONTHLY_BUDGET_USD`. When
   exhausted, the run still completes and still emails — aggregation and
   history, no model triage — and says so plainly rather than failing
@@ -207,7 +211,7 @@ analyst run afterward still processes it normally. Prints the exact system
 prompt size, the full user message that would be sent to the model, and the
 email body that would be mailed.
 
-Seed institutional knowledge into the model's cached system prompt by
+Seed institutional knowledge into the model's system prompt by
 editing `known_patterns.md` (gitignored, site-specific — one `## heading`
 per pattern, prose underneath). This is **not** the same as a `verdict` row:
 `known_patterns.md` is prose the model reads every run, while
