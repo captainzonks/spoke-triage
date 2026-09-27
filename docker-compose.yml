@@ -6,7 +6,8 @@
 #              --rm`), not a long-running service — no Traefik/Authentik.
 # Author: Matt Barham
 # Created: 2026-09-09
-# Version: 0.1.2
+# Modified: 2026-09-27
+# Version: 0.2.0
 # Host: Your Server
 # ==============================================================================
 # Component: module: triage
@@ -119,10 +120,56 @@ services:
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
+      - TRIAGE_EGRESS_PROFILE=analyst
       - TRIAGE_EGRESS_ANTHROPIC_HOST=${TRIAGE_EGRESS_ANTHROPIC_HOST}
       - TRIAGE_EGRESS_REFRESH_SECONDS=${TRIAGE_EGRESS_REFRESH_SECONDS}
       - TRIAGE_MAIL_RELAY_HOST=${TRIAGE_MAIL_RELAY_HOST}
       - TRIAGE_MAIL_RELAY_PORT=${TRIAGE_MAIL_RELAY_PORT}
+
+    tmpfs:
+      - /tmp/:rw,size=8m
+
+  #======================================
+  # TRIAGE-COLLECTOR-GUARD - allowlist sidecar: Postgres and Loki only
+  #======================================
+  # Same image as triage-egress-guard, in its `collector` profile: the
+  # collector shares this netns, so it can reach Postgres and the Loki in
+  # TRIAGE_LOKI_BASE_URL and nothing else, internet included (ADR-028).
+  # No build: section; the image is built by triage-egress-guard.
+  triage-collector-guard:
+    <<: *log_small
+    image: ${TRIAGE_EGRESS_GUARD_IMAGE}
+    hostname: triage-collector
+    container_name: triage-collector-guard
+    restart: "no"
+    init: true
+
+    security_opt:
+      - no-new-privileges=true
+    mem_limit: 64M
+    cpus: 0.25
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    networks:
+      - troxy
+
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/rules-applied"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    environment:
+      - TRIAGE_EGRESS_PROFILE=collector
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - TRIAGE_LOKI_BASE_URL=${TRIAGE_LOKI_BASE_URL}
+      - TRIAGE_EGRESS_REFRESH_SECONDS=${TRIAGE_EGRESS_REFRESH_SECONDS}
 
     tmpfs:
       - /tmp/:rw,size=8m
@@ -146,10 +193,19 @@ services:
         tags:
           - triage-collector:${TRIAGE_COLLECTOR_TAG}
 
-    hostname: triage-collector
     container_name: triage-collector
     restart: "no"
     init: true
+
+    depends_on:
+      triage-collector-guard:
+        condition: service_healthy
+
+    # Shares triage-collector-guard's network namespace, so its allowlist
+    # (Postgres + Loki, no internet) governs this container's traffic. No
+    # `networks:` or `hostname:` here: both conflict with network_mode, and
+    # the hostname comes from the guard (see triage-analyst below).
+    network_mode: "service:triage-collector-guard"
 
     security_opt:
       - no-new-privileges=true
@@ -159,9 +215,6 @@ services:
       - ALL
     read_only: true
     user: ${PUID}:${DGID}
-
-    networks:
-      - troxy
 
     environment:
       - TZ=${TZ}

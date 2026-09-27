@@ -11,7 +11,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-27
-# Version: 0.3.1
+# Version: 0.3.2
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -76,7 +76,12 @@ for the full rationale.
 
 ### 3.1 `triage-collector` — no egress
 
-Internal network only. Responsibilities:
+No internet access. Loki and Postgres are only reachable over `troxy`,
+which is not an internal network, so the collector runs in the netns of
+its own guard, `triage-collector-guard`, whose fail-closed allowlist admits
+only those two (ADR-028). *Corrected 2026-09-27: this section first said
+"Internal network only", but the collector was deployed directly on
+`troxy` and could reach the internet.* Responsibilities:
 
 1. Query Loki (`query_range`, same four severities as the current script:
    `critical_fatal`, `errors`, `warnings`, `system_issues`).

@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-27
-# Version: 0.8.0
+# Version: 0.9.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -99,6 +99,11 @@ runs as root / holds `NET_ADMIN`+`NET_RAW`.
   the first rule application has succeeded (a marker file written at the
   end of `apply_rules()`), so the analyst never starts against a
   default-open or not-yet-configured netns.
+- *Correction, 2026-09-27:* this ADR's "`triage-collector` (no internet
+  access)" was not true as deployed. The collector sat directly on `troxy`,
+  a non-internal bridge, and a test container on `troxy` reached
+  example.com. Its code never called out, but nothing stopped it. Fixed by
+  ADR-028, which puts the collector behind its own guard.
 
 ---
 
@@ -791,3 +796,78 @@ rate, so from then on caching only added cost.
   lifetime. That could come from splitting templates across several calls
   instead of capping them, or from a retry loop that resends the same
   system prompt.
+
+## ADR-028: The Collector Gets Its Own Egress Guard
+
+**Decision**: Run the collector in the network namespace of a second guard
+sidecar, `triage-collector-guard`. It is the same image and entrypoint as
+`triage-egress-guard`, in a new `collector` profile whose fail-closed
+allowlist admits only Postgres (`POSTGRES_HOST:POSTGRES_PORT`) and the
+Loki named in `TRIAGE_LOKI_BASE_URL`. The analyst's guard runs the
+`analyst` profile, which is the previous behaviour unchanged and still the
+default.
+
+**Context**: ADR-015 and spec §3.1 promised a collector with no internet
+access, but the compose file put it directly on `troxy`. That is Spoke's
+shared reverse-proxy network, a plain bridge that is not `internal`. A
+read-only audit on 2026-09-27 found this, and a throwaway container on
+`troxy` reached `https://example.com`. The collector's code never makes an
+outbound call, so nothing leaked. But the guarantee ADR-015 describes, "a
+container with no egress cannot exfiltrate, full stop", did not hold:
+anything that compromised the collector could have sent raw log lines
+anywhere. Raw log lines are the unredacted data the whole egress split
+exists to protect.
+
+**Alternatives considered**:
+- **Put the collector on an internal network.** Loki (monitoring module)
+  and `postgres-hub` (hub) share no internal network. The only network
+  they have in common is `troxy`. Making one would mean changing the hub
+  and another module for this module's sake, which breaks module
+  isolation.
+- **Share `triage-egress-guard` with the collector.** Its allowlist
+  includes `api.anthropic.com`, so the collector would gain exactly the
+  egress ADR-015 keeps from it.
+- **A second guard with its own profile (chosen).** It is self-contained in
+  this module, reuses a mechanism already reviewed and tested, and keeps
+  each container's allowlist to what that container needs.
+
+**Rationale**:
+- **Least privilege per container.** The collector needs Loki and Postgres.
+  The analyst needs Postgres, Anthropic and the mail relay. Neither gets
+  the other's destinations: the analyst profile doesn't allow Loki, and
+  the collector profile doesn't allow Anthropic or the relay.
+- **No drift between the two settings.** The collector profile reads the
+  same `TRIAGE_LOKI_BASE_URL` the collector uses, parsed in the entrypoint
+  (scheme, host, optional port; defaults of 80 or 443 by scheme). Pointing
+  the collector at a different Loki moves the allowlist with it.
+  Malformed URLs and unknown profiles stop the guard. It never starts
+  open, so the collector's `depends_on: service_healthy` never passes.
+- **Same failure behaviour as ADR-015.** Policy `DROP` is set before the
+  first resolution, rules refresh every `TRIAGE_EGRESS_REFRESH_SECONDS`,
+  and a failed resolution keeps the previous rules.
+- **Hostname.** The collector's `hostname:` moves to the guard. It
+  conflicts with `network_mode`, and the guard's netns is the one the
+  collector runs in.
+
+**Verified** (2026-09-27, the guard image built from this change, on
+Rome's `troxy`, with test containers joined to each guard's netns):
+
+| Destination | `collector` profile | `analyst` profile |
+|---|---|---|
+| `loki:3100/ready` | allowed | blocked |
+| `postgres-hub:5432` | allowed | allowed |
+| `api.anthropic.com:443` | blocked | allowed |
+| `mail-relay:8000` | blocked | allowed |
+| `https://example.com` | blocked | blocked |
+
+An unknown `TRIAGE_EGRESS_PROFILE` exits with an error before any rule is
+applied.
+
+**Consequences**:
+- One more short-lived root sidecar with `NET_ADMIN`/`NET_RAW` per run.
+  `run_triage.sh` now tears down both guards on exit.
+- The collector container no longer has its own hostname or `networks:`
+  entry. Its traffic appears to come from the guard's `troxy` address.
+- If the collector ever needs another destination, add it to the
+  `collector` profile deliberately; don't attach the collector to a
+  network directly.
