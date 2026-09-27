@@ -7,14 +7,16 @@
 //              the source before adding a model or trusting stale numbers.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.1.1
 // ==============================================================================
 
 pub struct ModelPricing {
     pub input_per_mtok: f64,
     pub output_per_mtok: f64,
-    /// 5-minute ephemeral cache write; this client always uses 5m TTL.
+    /// 5-minute cache write rate. The analyst no longer asks for caching
+    /// (ADR-027); the cache rates stay so any cache tokens the API reports
+    /// are still costed correctly.
     pub cache_write_per_mtok: f64,
     pub cache_read_per_mtok: f64,
 }

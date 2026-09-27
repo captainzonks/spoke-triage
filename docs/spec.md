@@ -10,8 +10,8 @@
 #              docs/architecture_decisions.md.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-19
-# Version: 0.3.0
+# Modified: 2026-09-27
+# Version: 0.3.1
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -52,9 +52,12 @@ order:
 5. `output_config.effort` (if set at all): default `low`. This is a
    structured-output classification call, not agentic work — raise only on
    evidence, not by default.
-6. Prompt caching is mandatory, not optional, once the cached block clears
+6. ~~Prompt caching is mandatory, not optional, once the cached block clears
    the minimum token floor (§9) — a static system prompt that isn't cached
-   is a standing cost leak.
+   is a standing cost leak.~~ *Superseded by ADR-027 (2026-09-27): the
+   analyst makes one call a day, so a cache is never read back before it
+   expires, and each write costs extra. Revisit if a run makes several
+   calls within the cache lifetime.*
 7. Hard monthly budget (§9) degrades to no-triage-still-emails rather than
    ever silently exceeding budget.
 
@@ -315,7 +318,8 @@ little room for the kind of judgment calls that would justify Sonnet-tier
 cost. Escalate to `claude-sonnet-5` only if eval data shows Haiku
 under-classifying severity on real Spoke logs.
 
-- Prompt caching on the static system prompt (evidence rules, ~1KB, cheap to
+- *Superseded by ADR-027: no prompt caching (one call a day never reads a
+  cache back).* Original text: Prompt caching on the static system prompt (evidence rules, ~1KB, cheap to
   cache — but Haiku 4.5's minimum cacheable prefix per the cached model
   table is 4096 tokens; **verify the evidence-rule block plus schema
   actually clears that floor before relying on cache savings**, or bundle

@@ -1,17 +1,17 @@
 // ==============================================================================
 // anthropic.rs - Anthropic Messages API client
 // ==============================================================================
-// Description: Forced tool-use + strict schema (spec §5), prompt caching on
-//              the system block (spec §9), exponential backoff with jitter
-//              honoring retry-after on 429/5xx (spec §9). Wire shapes and
-//              cache-write multipliers verified live against
+// Description: Forced tool-use + strict schema (spec §5), exponential
+//              backoff with jitter honoring retry-after on 429/5xx (spec
+//              §9). No prompt caching: one call a day never reads a cache
+//              back (ADR-027). Wire shapes verified live against
 //              platform.claude.com/docs on 2026-09-09 per spec §11 — no
 //              official Anthropic Rust SDK exists, so this is reqwest +
 //              serde_json against the documented JSON contract directly.
 // Author: Matt Barham
 // Created: 2026-09-09
 // Modified: 2026-09-27
-// Version: 0.1.2
+// Version: 0.1.3
 // ==============================================================================
 
 use async_trait::async_trait;
@@ -38,14 +38,6 @@ pub struct SystemBlock {
     #[serde(rename = "type")]
     pub block_type: &'static str,
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_control: Option<CacheControl>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CacheControl {
-    #[serde(rename = "type")]
-    pub control_type: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,7 +182,6 @@ pub mod mock {
                     .map(|s| SystemBlock {
                         block_type: s.block_type,
                         text: s.text.clone(),
-                        cache_control: s.cache_control.as_ref().map(|c| CacheControl { control_type: c.control_type }),
                     })
                     .collect(),
                 messages: request
