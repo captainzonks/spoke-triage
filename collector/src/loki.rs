@@ -67,7 +67,10 @@ pub struct LokiClient {
 impl LokiClient {
     pub fn new(base_url: String, tenant_id: String) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .expect("reqwest client"),
             base_url,
             tenant_id,
         }
