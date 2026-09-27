@@ -12,7 +12,7 @@ license = "MIT"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "chrono", "uuid", "migrate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 regex = "1"
