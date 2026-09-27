@@ -9,7 +9,7 @@
 # Author: Matt Barham
 # Created: 2026-09-08
 # Modified: 2026-09-27
-# Version: 0.6.0
+# Version: 0.6.1
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -555,14 +555,17 @@ scans OS packages only here"); this ADR closes it.
   lets the job create and update code scanning analyses; it can't push
   code, change settings or read secrets. For `pull_request` runs from a
   fork, GitHub downgrades every write permission to read, whatever the
-  workflow asks for
-  ([workflow syntax, `permissions`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)),
+  workflow asks for ([workflow syntax,
+  `permissions`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)),
   and code scanning accepts the upload anyway: "code scanning always
   allows the uploading of results when the `pull_request` event triggers
   the action run"
   ([troubleshooting](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)).
   Dependabot PRs run "as if they are from a forked repository", so the
-  same rules apply to them. This couldn't be tested yet: the open Dependabot PRs last ran before `codeql.yml` existed and were deliberately left alone, so the first Dependabot PR opened after this change lands is the check. If its upload fails, the fix options go to a follow-up decision; permissions are not widened in advance.
+  same rules apply to them. Verified on 2026-09-27 with spoke-triage#8,
+  the first Dependabot PR to run `codeql.yml` after it merged: both the
+  `rust` and `actions` analyses uploaded to `refs/pull/8/merge` with no
+  permission changes.
 - **SBOMs.** Every CI run of `trivy.yml` writes seven files: for each
   image a CycloneDX (`<image>.cdx.json`) and an SPDX (`<image>.spdx.json`)
   SBOM, plus `spoke_triage_source.cdx.json` from `trivy fs` on the
