@@ -10,8 +10,8 @@
 //              serde_json against the documented JSON contract directly.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.1.1
 // ==============================================================================
 
 use async_trait::async_trait;
@@ -150,9 +150,8 @@ impl Transport for AnthropicTransport {
 }
 
 fn backoff_with_jitter(attempt: u32) -> Duration {
-    use rand::Rng;
     let base_secs = 2u64.saturating_pow(attempt).min(60);
-    let jitter_ms = rand::thread_rng().gen_range(0..1000);
+    let jitter_ms = rand::random_range(0..1000);
     Duration::from_secs(base_secs) + Duration::from_millis(jitter_ms)
 }
 
@@ -221,5 +220,25 @@ pub mod mock {
             ContentBlock::ToolUse { name, input } => ContentBlock::ToolUse { name: name.clone(), input: input.clone() },
             ContentBlock::Other => ContentBlock::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backoff_with_jitter;
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_jitter_stays_under_one_second() {
+        for _ in 0..200 {
+            let d = backoff_with_jitter(0);
+            assert!(d >= Duration::from_secs(1) && d < Duration::from_secs(2), "{d:?}");
+        }
+    }
+
+    #[test]
+    fn backoff_base_is_capped_at_sixty_seconds() {
+        let d = backoff_with_jitter(20);
+        assert!(d >= Duration::from_secs(60) && d < Duration::from_secs(61), "{d:?}");
     }
 }
