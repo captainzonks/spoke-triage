@@ -7,15 +7,20 @@
 #              `docker save` tarballs, so the scanner container gets no
 #              Docker socket. Fails on fixable HIGH/CRITICAL findings and
 #              reports everything else. Runs weekly as well, since new CVEs
-#              land without a code change. Deploys nothing (ADR-019, ADR-022).
+#              land without a code change. Also writes CycloneDX and SPDX
+#              SBOMs for each image plus a CycloneDX SBOM of the Cargo
+#              workspace, validates them, and uploads them as one artifact.
+#              Deploys nothing (ADR-019, ADR-022, ADR-025).
 # Author: Matt Barham
 # Created: 2026-09-26
-# Modified: 2026-09-26
-# Version: 0.1.0
+# Modified: 2026-09-27
+# Version: 0.2.0
 # ==============================================================================
 # Documentation:
 #   - https://trivy.dev/latest/docs/target/container_image/#tar-files
 #   - https://github.com/aquasecurity/trivy/releases/tag/v0.74.0
+#   - https://github.com/aquasecurity/trivy/blob/v0.74.0/docs/guide/supply-chain/sbom.md
+#   - https://github.com/aquasecurity/trivy/blob/v0.74.0/docs/guide/coverage/language/rust.md
 # ==============================================================================
 
 name: trivy
@@ -33,6 +38,11 @@ permissions:
 
 env:
   TRIVY_IMAGE: "ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+  # Spec versions Trivy 0.74.0 writes (checked against a local 0.74.0 run on
+  # 2026-09-27; the v0.74.0 docs' examples show older values). A Trivy bump
+  # that changes either fails validation on purpose, so it gets a look.
+  CDX_SPEC_VERSION: "1.7"
+  SPDX_VERSION: "SPDX-2.3"
 
 jobs:
   scan:
@@ -48,6 +58,7 @@ jobs:
       # USER_ID/GROUP_ID are left at the Dockerfile defaults (1000/968).
       # --pull: always scan the current upstream base, never a cached one.
       - name: Build images
+        id: build
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/images"
@@ -89,3 +100,90 @@ jobs:
             echo "::error::Fixable HIGH/CRITICAL vulnerabilities in: ${failed[*]}"
             exit 1
           fi
+
+      # SBOM steps run after the gate so the gate step is untouched, but on
+      # !cancelled() so a failing gate (e.g. a new CVE on the weekly run)
+      # still produces SBOMs. They need the tarballs, hence build success.
+      - name: Generate SBOMs
+        id: sbom
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/sbom" "${RUNNER_TEMP}/trivy-cache"
+          trivy() {
+            docker run --rm \
+              -v "${RUNNER_TEMP}/trivy-cache:/cache" \
+              -v "${RUNNER_TEMP}/images:/images:ro" \
+              -v "${GITHUB_WORKSPACE}:/src:ro" \
+              -v "${RUNNER_TEMP}/sbom:/out" \
+              "${TRIVY_IMAGE}" "$@" --cache-dir /cache --no-progress
+          }
+          for img in triage-egress-guard triage-collector triage-analyst; do
+            trivy image --input "/images/${img}.tar" \
+              --format cyclonedx --output "/out/${img}.cdx.json"
+            trivy image --input "/images/${img}.tar" \
+              --format spdx-json --output "/out/${img}.spdx.json"
+          done
+          # Source SBOM from Cargo.lock + Cargo.toml. Trivy omits
+          # dev-dependencies when both are present (ADR-025).
+          trivy fs --skip-dirs /src/target \
+            --format cyclonedx --output /out/spoke_triage_source.cdx.json /src
+
+      - name: Validate SBOMs
+        if: ${{ !cancelled() && steps.sbom.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/sbom"
+          bad=0
+          {
+            echo "| SBOM | Format | Spec | Components |"
+            echo "|---|---|---|---|"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          for f in *.cdx.json *.spdx.json; do
+            case "${f}" in
+              *.cdx.json)
+                fmt=CycloneDX
+                spec=$(jq -er '.specVersion' "${f}") || spec=invalid
+                count=$(jq -er 'select(.bomFormat == "CycloneDX") | .components | length' "${f}") || count=0
+                want="${CDX_SPEC_VERSION}" ;;
+              *.spdx.json)
+                fmt=SPDX
+                spec=$(jq -er '.spdxVersion' "${f}") || spec=invalid
+                count=$(jq -er '.packages | length' "${f}") || count=0
+                want="${SPDX_VERSION}" ;;
+            esac
+            echo "${f}: ${fmt} ${spec}, ${count} components"
+            echo "| \`${f}\` | ${fmt} | ${spec} | ${count} |" >> "${GITHUB_STEP_SUMMARY}"
+            if [ "${spec}" != "${want}" ]; then
+              echo "::error file=${f}::spec version '${spec}', expected '${want}'"; bad=1
+            fi
+            if [ "${count}" -lt 1 ]; then
+              echo "::error file=${f}::no components"; bad=1
+            fi
+          done
+          [ "$(ls -1 | wc -l)" -eq 7 ] || { echo "::error::expected 7 SBOM files"; bad=1; }
+          exit "${bad}"
+
+      # Vulnerability scan driven from each image SBOM. Informational only
+      # (--exit-code 0): the gate above stays the only image gate.
+      - name: Scan SBOMs (informational)
+        if: ${{ !cancelled() && steps.sbom.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          for img in triage-egress-guard triage-collector triage-analyst; do
+            echo "::group::${img}.cdx.json"
+            docker run --rm \
+              -v "${RUNNER_TEMP}/trivy-cache:/cache" \
+              -v "${RUNNER_TEMP}/sbom:/sbom:ro" \
+              "${TRIVY_IMAGE}" sbom --cache-dir /cache --no-progress \
+              --exit-code 0 "/sbom/${img}.cdx.json"
+            echo "::endgroup::"
+          done
+
+      - name: Upload SBOMs
+        if: ${{ !cancelled() && steps.sbom.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: ${{ runner.temp }}/sbom/
+          if-no-files-found: error
