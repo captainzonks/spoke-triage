@@ -6,8 +6,8 @@
 //              to the internet, never touches the Anthropic API.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.1.1
 // ==============================================================================
 
 mod aggregate;
@@ -16,12 +16,13 @@ mod db;
 mod loki;
 
 use chrono::Utc;
-use config::Config;
+use config::{Config, Secrets};
 use loki::{LokiClient, SEVERITY_QUERIES};
 use sqlx::postgres::PgPoolOptions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let secrets = Secrets::from_env()?;
     let cfg = Config::from_env()?;
     // Spec §8: "query, normalize, aggregate ... skip ... print what would
     // have happened." No Postgres connection at all in dry-run — this half
@@ -79,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&cfg.database_url)
+        .connect(secrets.database_url.expose())
         .await?;
 
     sqlx::migrate!("../migrations").run(&pool).await?;

@@ -7,15 +7,33 @@
 //              from POSTGRES_HOST/POSTGRES_PORT/TRIAGE_POSTGRES_DB plus the
 //              triage_app password, read from TRIAGE_APP_PSQL_PASSWORD_FILE
 //              via spoke_triage_common::secret — no plaintext password in
-//              the environment (spec §6 role model).
+//              the environment (spec §6 role model). The URL lives in
+//              `Secrets`, not `Config`, so nothing that logs settings can
+//              reach it (ADR-026).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.2.0
 // ==============================================================================
 
+use spoke_triage_common::secret::Secret;
+
+/// Credentials only. Kept apart from `Config` so the ordinary settings can be
+/// logged or passed around freely (ADR-026).
+#[derive(Debug)]
+pub struct Secrets {
+    pub database_url: Secret,
+}
+
+impl Secrets {
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Secrets {
+            database_url: spoke_triage_common::secret::build_postgres_url("TRIAGE_POSTGRES_DB")?,
+        })
+    }
+}
+
 pub struct Config {
-    pub database_url: String,
     pub loki_base_url: String,
     pub loki_tenant_id: String,
     pub lookback_hours: i64,
@@ -25,7 +43,6 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Config {
-            database_url: spoke_triage_common::secret::build_postgres_url("TRIAGE_POSTGRES_DB")?,
             loki_base_url: env_or("TRIAGE_LOKI_BASE_URL", "http://loki:3100"),
             loki_tenant_id: env_or("TRIAGE_LOKI_TENANT_ID", "fake"),
             lookback_hours: env_or("TRIAGE_LOOKBACK_HOURS", "24").parse()?,

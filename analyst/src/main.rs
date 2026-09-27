@@ -7,8 +7,8 @@
 //              writes findings. Never receives raw log lines.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-25
-// Version: 0.2.0
+// Modified: 2026-09-27
+// Version: 0.2.1
 // ==============================================================================
 
 mod anthropic;
@@ -22,7 +22,7 @@ mod report_render;
 mod schema;
 
 use anthropic::{AnthropicTransport, CacheControl, MessageParam, MessagesRequest, SystemBlock, ToolChoice, Transport};
-use config::Config;
+use config::{Config, Secrets};
 use mail::{MailTransport, RelayTransport, SendRequest};
 use report_render::ReportContext;
 use sqlx::postgres::PgPoolOptions;
@@ -31,6 +31,7 @@ use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let secrets = Secrets::from_env()?;
     let cfg = Config::from_env()?;
     // Spec §8: "render ... skip the API call and the mail send, print what
     // would have happened." Reads (next_pending_run, load_pending_templates,
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&cfg.database_url)
+        .connect(secrets.database_url.expose())
         .await?;
 
     let Some(pending) = db::next_pending_run(&pool).await? else {
@@ -144,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let transport = AnthropicTransport::new(cfg.anthropic_api_key.clone());
+    let transport = AnthropicTransport::new(secrets.anthropic_api_key);
     match run_analysis(&transport, &cfg, &templates, pending.window_start, pending.window_end).await {
         Ok((report, usage, latency_ms)) => {
             let cost = cost::estimate_cost_usd(
@@ -296,8 +297,6 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
-            database_url: String::new(),
-            anthropic_api_key: "test-key".to_string(),
             model: "claude-haiku-4-5".to_string(),
             monthly_budget_usd: 20.0,
             known_patterns_path: None,

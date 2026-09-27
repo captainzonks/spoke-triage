@@ -8,18 +8,35 @@
 //              spoke_triage_common::secret — read natively in Rust rather
 //              than a shell entrypoint (spec §3.2 speculated the latter
 //              before this existed; native reading matches spoke-trek's own
-//              _FILE handling and needs no extra image layer).
+//              _FILE handling and needs no extra image layer). Both
+//              secrets live in `Secrets`, not `Config`, so nothing that logs
+//              settings can reach them (ADR-026).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-25
-// Version: 0.1.0
+// Modified: 2026-09-27
+// Version: 0.2.0
 // ==============================================================================
 
-use spoke_triage_common::secret::read_secret;
+use spoke_triage_common::secret::{read_secret, Secret};
+
+/// Credentials only. Kept apart from `Config` so the ordinary settings can be
+/// logged or passed around freely (ADR-026).
+#[derive(Debug)]
+pub struct Secrets {
+    pub database_url: Secret,
+    pub anthropic_api_key: Secret,
+}
+
+impl Secrets {
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Secrets {
+            database_url: spoke_triage_common::secret::build_postgres_url("TRIAGE_POSTGRES_DB")?,
+            anthropic_api_key: read_secret("ANTHROPIC_API_KEY_FILE", "ANTHROPIC_API_KEY")?,
+        })
+    }
+}
 
 pub struct Config {
-    pub database_url: String,
-    pub anthropic_api_key: String,
     pub model: String,
     pub monthly_budget_usd: f64,
     pub known_patterns_path: Option<String>,
@@ -48,8 +65,6 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Config {
-            database_url: spoke_triage_common::secret::build_postgres_url("TRIAGE_POSTGRES_DB")?,
-            anthropic_api_key: read_secret("ANTHROPIC_API_KEY_FILE", "ANTHROPIC_API_KEY")?,
             model: env_or("TRIAGE_MODEL", "claude-haiku-4-5"),
             monthly_budget_usd: env_or("TRIAGE_MONTHLY_BUDGET_USD", "20").parse()?,
             known_patterns_path: std::env::var("TRIAGE_KNOWN_PATTERNS_PATH").ok(),
@@ -65,4 +80,21 @@ impl Config {
 
 fn env_or(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Secrets;
+    use spoke_triage_common::secret::Secret;
+
+    #[test]
+    fn secrets_debug_redacts_both_values() {
+        let secrets = Secrets {
+            database_url: Secret::new("postgres://triage_app:pw-in-url@db:5432/triage".to_string()),
+            anthropic_api_key: Secret::new("sk-ant-not-a-real-key".to_string()),
+        };
+        let shown = format!("{secrets:?}");
+        assert!(!shown.contains("pw-in-url"), "{shown}");
+        assert!(!shown.contains("sk-ant"), "{shown}");
+    }
 }

@@ -11,12 +11,13 @@
 // Author: Matt Barham
 // Created: 2026-09-09
 // Modified: 2026-09-27
-// Version: 0.1.1
+// Version: 0.1.2
 // ==============================================================================
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use spoke_triage_common::secret::Secret;
 use std::time::Duration;
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -96,11 +97,11 @@ pub trait Transport: Send + Sync {
 
 pub struct AnthropicTransport {
     http: reqwest::Client,
-    api_key: String,
+    api_key: Secret,
 }
 
 impl AnthropicTransport {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: Secret) -> Self {
         Self {
             http: reqwest::Client::new(),
             api_key,
@@ -116,7 +117,7 @@ impl Transport for AnthropicTransport {
             let response = self
                 .http
                 .post("https://api.anthropic.com/v1/messages")
-                .header("x-api-key", &self.api_key)
+                .header("x-api-key", self.api_key.expose())
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("content-type", "application/json")
                 .json(request)
