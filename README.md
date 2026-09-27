@@ -9,7 +9,7 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
 Author: Matt Barham
 Created: 2026-09-09
 Modified: 2026-09-27
-Version: 0.4.1
+Version: 0.5.0
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -37,9 +37,10 @@ driven; see [Quick Start](#quick-start) and
 
 | Service               | Description                                    | Egress                  | Network |
 |------------------------|------------------------------------------------|--------------------------|---------|
-| `triage-collector`     | Queries Loki, normalizes, aggregates, persists | None                     | troxy   |
+| `triage-collector`     | Queries Loki, normalizes, aggregates, persists | None (Loki and Postgres only) | shares `triage-collector-guard`'s netns |
 | `triage-analyst`       | Reads aggregates, calls Claude, emails report  | `api.anthropic.com` only | shares `triage-egress-guard`'s netns |
-| `triage-egress-guard`  | Root sidecar; the only source of egress rules  | n/a (firewall itself)    | troxy   |
+| `triage-collector-guard` | Root sidecar; the collector's allowlist (`collector` profile) | n/a (firewall itself) | troxy |
+| `triage-egress-guard`  | Root sidecar; the analyst's allowlist (`analyst` profile) | n/a (firewall itself)    | troxy   |
 | `triage-cli`           | Operator CLI (`verdict set`), bundled into the analyst image | none      | n/a     |
 
 Not a long-running stack — `docker compose run --rm`, driven by a systemd
@@ -68,7 +69,8 @@ path, or long hex run, plus a best-effort filter for credential/token shapes
 beyond that (see [Normalization](#normalization-the-redaction-claim)).
 
 `triage-egress-guard` enforces this: a root sidecar with `NET_ADMIN`/`NET_RAW`
-(the *only* container in this module with either) that resolves
+(it and `triage-collector-guard` are the only containers in this module
+with either) that resolves
 `api.anthropic.com`, `POSTGRES_HOST`, and the mail relay host, then applies a
 fail-closed `iptables OUTPUT` allowlist scoped to those resolved IPs —
 `triage-analyst` shares its network namespace (`network_mode:
@@ -82,6 +84,13 @@ startup on the guard having applied rules at least once. Full mechanism and
 the empirical verification (Anthropic reachable, Postgres reachable at the
 network layer, an arbitrary third host silently dropped) in
 [ADR-015](docs/architecture_decisions.md#adr-015-collectoranalyst-egress-split).
+
+The collector gets the same treatment from its own sidecar,
+`triage-collector-guard`: the same image in its `collector` profile, which
+allows only Postgres and the Loki named in `TRIAGE_LOKI_BASE_URL`. So the
+collector can't reach the internet, Anthropic or the mail relay even though
+its netns sits on `troxy`
+([ADR-028](docs/architecture_decisions.md#adr-028-the-collector-gets-its-own-egress-guard)).
 
 ### Normalization (the redaction claim)
 
