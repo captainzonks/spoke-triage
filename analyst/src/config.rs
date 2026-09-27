@@ -94,7 +94,7 @@ mod tests {
             anthropic_api_key: Secret::new("sk-ant-not-a-real-key".to_string()),
         };
         let shown = format!("{secrets:?}");
-        assert!(!shown.contains("pw-in-url"), "{shown}");
-        assert!(!shown.contains("sk-ant"), "{shown}");
+        assert!(!shown.contains("pw-in-url"));
+        assert!(!shown.contains("sk-ant"));
     }
 }

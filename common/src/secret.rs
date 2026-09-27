@@ -83,7 +83,7 @@ mod tests {
     fn debug_does_not_reveal_the_value() {
         let secret = Secret::new("hunter2-not-a-real-password".to_string());
         let shown = format!("{secret:?}");
-        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(!shown.contains("hunter2"));
         assert_eq!(shown, "Secret([REDACTED])");
     }
 
@@ -97,7 +97,7 @@ mod tests {
         }
         let holder = Holder { name: "db", url: Secret::new("postgres://u:s3cr3t@h/db".to_string()) };
         let shown = format!("{holder:#?}");
-        assert!(!shown.contains("s3cr3t"), "{shown}");
+        assert!(!shown.contains("s3cr3t"));
         assert!(shown.contains("db"));
     }
 
