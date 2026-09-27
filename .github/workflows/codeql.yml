@@ -1,0 +1,65 @@
+# ==============================================================================
+# codeql.yml - CodeQL static analysis (SAST) for spoke-triage
+# ==============================================================================
+# Description: Runs CodeQL advanced setup over the Rust workspace and the
+#              GitHub Actions workflows, and uploads results to code
+#              scanning. Report-only: alerts appear in the Security tab and
+#              on PRs, but no branch rule requires this workflow. Deploys
+#              nothing (ADR-019, ADR-025).
+# Author: Matt Barham
+# Created: 2026-09-27
+# Modified: 2026-09-27
+# Version: 0.1.0
+# ==============================================================================
+# Documentation:
+#   - https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/configuring-advanced-setup-for-code-scanning
+#   - https://docs.github.com/en/code-security/reference/code-scanning/codeql/codeql-build-options-and-steps-for-compiled-languages
+#   - https://codeql.github.com/docs/codeql-overview/supported-languages-and-frameworks/
+# ==============================================================================
+
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # security-events: write is needed only to upload SARIF to code
+    # scanning, and only this job gets it. For pull_request runs from forks
+    # and Dependabot, GitHub downgrades it to read (ADR-025).
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # rust: GA since CodeQL CLI 2.23.3 (2025-10-14); build-mode none is
+        # the documented mode for Rust, so no toolchain or build step.
+        # actions: GA since 2025-04-22; analyzes .github/workflows/*.yml.
+        language: [rust, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: "/language:${{ matrix.language }}"

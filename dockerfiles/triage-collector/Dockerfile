@@ -7,7 +7,9 @@
 #              collector binary is copied into the runtime stage) then keeps
 #              only the collector binary + migrations in the final image.
 # Author: Matt Barham
-# Version: 0.1.0
+# Created: 2026-09-10
+# Modified: 2026-09-27
+# Version: 0.2.0
 # ==============================================================================
 # Base Images: rust:1-slim (builder), alpine:latest (runtime)
 # Target Architecture: x86_64-unknown-linux-musl (static binary)
@@ -24,6 +26,11 @@ RUN apt update -qq && apt install -y -qq --no-install-recommends musl-tools pkg-
 
 RUN rustup set profile minimal && rustup target add x86_64-unknown-linux-musl
 
+# cargo-auditable embeds the crate dependency list in each binary so image
+# scanners (Trivy) can see the shipped crates. Builder stage only (ADR-025).
+ARG CARGO_AUDITABLE_VERSION=0.7.6
+RUN cargo install cargo-auditable --locked --version ${CARGO_AUDITABLE_VERSION}
+
 WORKDIR /usr/src/spoke-triage
 COPY ./Cargo.toml ./Cargo.lock ./
 COPY ./common ./common/
@@ -33,7 +40,7 @@ COPY ./cli ./cli/
 COPY ./migrations ./migrations/
 
 ENV RUSTFLAGS='-C link-arg=-s'
-RUN cargo build --release --target x86_64-unknown-linux-musl -p spoke-triage-collector
+RUN cargo auditable build --release --target x86_64-unknown-linux-musl -p spoke-triage-collector
 
 #=============================================================================
 # RUNTIME STAGE
