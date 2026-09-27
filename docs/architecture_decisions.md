@@ -8,8 +8,8 @@
 #              log, cross-referenced from spoke rather than merged into it.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-26
-# Version: 0.5.0
+# Modified: 2026-09-27
+# Version: 0.6.0
 # ==============================================================================
 # Document Type: ADR log
 # Audience: Implementers and reviewers of spoke-triage
@@ -494,3 +494,160 @@ in the same change set.
 - CodeQL was not added. Rust has been generally available in CodeQL since
   2025-10-14 (CodeQL CLI 2.23.3), so it can be added later as its own
   decision.
+
+## ADR-025: CodeQL SAST and SBOMs in Test-Only CI
+
+**Decision**: Add static analysis and software bills of materials to the
+ADR-022 scanning set, and build the Rust binaries with `cargo auditable` so
+both the SBOMs and the existing image gate see the crates that actually
+ship:
+
+| Change | Tool and version | Gate |
+|---|---|---|
+| `codeql.yml` (new) | `github/codeql-action` v4.38.2, languages `rust` and `actions`, `build-mode: none`, default query suite | Report-only: alerts go to code scanning; no branch rule requires it |
+| `trivy.yml` 0.2.0 | Trivy 0.74.0 (same digest as ADR-022) | CycloneDX and SPDX SBOM per image, CycloneDX SBOM of the Cargo workspace; validated in the job, uploaded as the `sboms` artifact. The ADR-022 gate step is unchanged |
+| Collector and analyst Dockerfiles 0.2.0 | `cargo-auditable` 0.7.6, builder stage only | None of its own; widens what the existing Trivy gate can see |
+
+**Context**: After ADR-022 the repo had secret, dependency and image
+scanning, but nothing read the code itself (clippy is a linter, not a
+security analyzer), and nothing produced a machine-readable inventory of
+what ships. The images were also opaque to Trivy at the crate level: plain
+`cargo build` binaries carry no dependency metadata, so the image SBOM of
+the deployed `triage-collector` and `triage-analyst` listed
+18 components each (17 Alpine packages plus the OS entry) and no crates at all. ADR-022 recorded that gap ("Trivy
+scans OS packages only here"); this ADR closes it.
+
+**Rationale**:
+- **What CodeQL covers.** Data-flow and structural security queries over
+  the Rust workspace (for example `rust/disabled-certificate-check`,
+  `rust/cleartext-logging`, `rust/hard-coded-cryptographic-value`), and the
+  `actions` queries over `.github/workflows/` (for example, untrusted
+  event fields interpolated into `run:` steps). Rust became
+  generally available on 2025-10-14 with CodeQL CLI 2.23.3
+  ([changelog](https://github.blog/changelog/2025-10-14-codeql-scanning-rust-and-c-c-without-builds-is-now-generally-available/));
+  `actions` on 2025-04-22
+  ([changelog](https://github.blog/changelog/2025-04-22-github-actions-workflow-security-analysis-with-codeql-is-now-generally-available/)).
+  `build-mode: none` is the documented mode for Rust
+  ([build options](https://docs.github.com/en/code-security/reference/code-scanning/codeql/codeql-build-options-and-steps-for-compiled-languages)),
+  so the job needs no toolchain step and never compiles the workspace.
+- **What CodeQL doesn't cover.** CodeQL's default threat model is `remote`:
+  environment variables and command-line arguments are `local` sources
+  and are ignored. spoke-triage's inputs are Loki responses and its own
+  configuration, so taint queries only fire on data read from the
+  network. Structural queries (a hard-coded `true` passed to a certificate
+  check, weak algorithms) fire regardless. The proof run below used one.
+- **Default suite, not `security-extended`.** The default suite is the
+  high-precision set GitHub runs for default setup. `security-extended`
+  adds lower-precision queries, and on a small workspace with no remote
+  request handlers the likely yield is noise, not findings. Revisit if the
+  default suite stays silent for a long time while real bugs turn up
+  elsewhere.
+- **Report-only.** CodeQL results land in the Security tab and as PR
+  annotations. The repository ruleset (a setting, 2026-09-27) requires
+  the four ADR-022 checks to pass before merge but deliberately not
+  CodeQL: a SAST finding needs a human judgment (fix, or dismiss with a
+  reason), and a required check would force that judgment under merge
+  pressure.
+- **`security-events: write`, the first write-scoped token in this repo.**
+  Uploading SARIF to code scanning requires it. Scope: only the `analyze`
+  job in `codeql.yml` has it; the workflow's top-level permission stays
+  `contents: read`, and every other workflow is unchanged. The permission
+  lets the job create and update code scanning analyses; it can't push
+  code, change settings or read secrets. For `pull_request` runs from a
+  fork, GitHub downgrades every write permission to read, whatever the
+  workflow asks for
+  ([workflow syntax, `permissions`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)),
+  and code scanning accepts the upload anyway: "code scanning always
+  allows the uploading of results when the `pull_request` event triggers
+  the action run"
+  ([troubleshooting](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)).
+  Dependabot PRs run "as if they are from a forked repository", so the
+  same rules apply to them. This couldn't be tested yet: the open Dependabot PRs last ran before `codeql.yml` existed and were deliberately left alone, so the first Dependabot PR opened after this change lands is the check. If its upload fails, the fix options go to a follow-up decision; permissions are not widened in advance.
+- **SBOMs.** Every CI run of `trivy.yml` writes seven files: for each
+  image a CycloneDX (`<image>.cdx.json`) and an SPDX (`<image>.spdx.json`)
+  SBOM, plus `spoke_triage_source.cdx.json` from `trivy fs` on the
+  checkout (mounted read-only). The job checks each file parses, has at
+  least one component, and carries the exact spec version Trivy 0.74.0
+  writes: CycloneDX `specVersion` 1.7 and `spdxVersion` SPDX-2.3, measured
+  on a local 0.74.0 run because the v0.74.0 docs still show older example
+  values. A Trivy bump that changes either fails validation on purpose.
+  Counts go to the job summary. `trivy sbom --exit-code 0` then scans each
+  image SBOM for vulnerabilities, informational only, so the ADR-022 gate
+  stays the only image gate. The SBOM steps run after the gate with
+  `!cancelled()`, so a week where the gate fails still produces SBOMs.
+  Artifacts keep the repository default retention (90 days).
+- **What the SBOMs don't cover.** The source SBOM omits dev-dependencies
+  (Trivy drops them when `Cargo.toml` sits beside `Cargo.lock`): 248 of
+  the 264 `Cargo.lock` packages appear, and the 16 missing ones are the
+  `proptest`/`tempfile` test tree, which never ships. It also contains one
+  nameless component, the virtual workspace root. `triage-egress-guard`
+  is Alpine plus a POSIX shell entrypoint with no compiled code, so its
+  SBOM is OS packages only, as it should be.
+- **`cargo-auditable`.** It embeds the resolved crate list in a
+  `.dep-v0` section of each binary at build time, which Trivy reads
+  ([Trivy Rust coverage](https://github.com/aquasecurity/trivy/blob/v0.74.0/docs/guide/coverage/language/rust.md)).
+  Installed with `cargo install cargo-auditable --locked --version 0.7.6`
+  in the builder stage only; the runtime stage and final image gain no
+  packages. After the change the image SBOMs list 202 components for `triage-collector` (183 crates) and 352 for `triage-analyst` (332 crates, since it also ships `triage-cli`), from the CI run on spoke-triage#12.
+  Cost: `cargo install` adds a compile to each uncached builder build, and
+  one more crates.io tool enters the build supply chain (its own
+  dependencies are pinned by `--locked`). The embedded list is a few KB of
+  compressed JSON and names only crates already public in `Cargo.lock`.
+  Because the image gate now sees crates too, a fixable HIGH/CRITICAL
+  RustSec advisory can fail `trivy.yml` as well as `cargo_deny.yml`.
+- **`cargo-auditable` over-reports optional dependencies.** It takes its
+  crate list from `cargo metadata`, which counts an optional dependency as
+  present when a feature names it with the weak `dep?/feature` syntax.
+  reqwest's `__rustls-ring` feature contains `quinn?/ring`, so `quinn`,
+  `quinn-proto` and `quinn-udp` (reqwest's HTTP/3 stack) appear in the
+  embedded list, though `http3` is never enabled and `cargo tree --target
+  all` shows none of them. The stripped collector binary contains no
+  `quinn` strings. The first scan with the new metadata failed the gate
+  on `quinn-proto` 0.11.13 (RUSTSEC-2026-0037 and RUSTSEC-2026-0185);
+  cargo-deny, which follows cargo's real feature resolution, correctly
+  passed. The fix was a lockfile bump to 0.11.18 rather than an ignore
+  entry: it clears both gates without a suppression and leaves the
+  version already patched if HTTP/3 is ever turned on. Expect the same
+  pattern again. When the image gate flags a crate that cargo-deny
+  passes, check `cargo tree` before assuming it ships.
+- **DAST is out of scope.** Dynamic testing needs a running service to
+  probe. spoke-triage exposes no HTTP surface: the collector and analyst
+  are batch jobs started by a systemd timer, with no listener, and the
+  egress guard only writes firewall rules.
+- **Why this still fits ADR-019.** Both workflows run on GitHub-hosted
+  runners, with no repository secrets, `persist-credentials: false` and no
+  `pull_request_target`. CodeQL never builds or runs the code. The SBOM
+  steps reuse the image tarballs the scan already built and mount the
+  checkout read-only; no scanner gets a Docker socket. The only write
+  permission is the code scanning upload described above. Nothing is
+  pushed, published or deployed; the Dockerfile change reaches Rome only
+  when it's rebuilt by hand (ADR-021).
+
+**Versions verified** (2026-09-27):
+
+| Tool | Version | Pin | Checked at |
+|---|---|---|---|
+| github/codeql-action | v4.38.2 | `2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2` | GitHub releases, tag dereferenced via the git refs API (annotated tag) |
+| actions/upload-artifact | v7.0.1 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | GitHub releases, git refs API |
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | Unchanged from ADR-022, re-checked |
+| cargo-auditable | 0.7.6 | `--locked --version 0.7.6` | GitHub releases (rust-secure-code/cargo-auditable), crates.io API |
+| Trivy | 0.74.0 | unchanged digest (ADR-022) | Docs read at tag v0.74.0 |
+
+**Consequences**:
+- Findings arrive in two places with different weights: the ADR-022 gates
+  block a merge, CodeQL alerts wait in the Security tab for a decision.
+  Dismissals need a written reason.
+- `codeql.yml` also runs weekly, so new queries shipped in a CodeQL
+  release can raise alerts on unchanged code.
+- A deliberately insecure test commit showed the Rust analysis reports
+  alerts: spoke-triage#13 added `danger_accept_invalid_certs(true)` to the
+  Loki client, and CodeQL raised `rust/disabled-certificate-check` (high)
+  at `collector/src/loki.rs:71`. The draft PR was closed unmerged and its
+  branch deleted; the commit stays reachable through `refs/pull/13/head`.
+- A PR that introduces an alert gets a failing `CodeQL` check. The
+  ruleset doesn't require it, but the standing rule of merging only on
+  all-green checks means such a PR waits for the alert to be fixed or
+  dismissed with a reason.
+- The base images are still floating (`rust:1-slim`, `alpine:latest`), so
+  SBOM contents move with upstream between runs. Pinning them is separate
+  work.
