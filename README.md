@@ -8,8 +8,8 @@ Description: AI-triaged Loki log analysis — aggregate, normalize/redact,
              classify, persist, report, track cost
 Author: Matt Barham
 Created: 2026-09-09
-Modified: 2026-09-10
-Version: 0.3.0
+Modified: 2026-09-27
+Version: 0.4.0
 ==============================================================================
 Document Type: Reference
 Audience: Developer
@@ -274,6 +274,22 @@ runtime, static binary, non-root). `triage-egress-guard` is plain Alpine +
 `iptables`/`bind-tools` running a POSIX shell entrypoint — no compiled app.
 Build with `docker compose build`.
 
+## Security & CI
+
+CI runs on GitHub-hosted runners only: it tests and scans, and never
+deploys or touches the server
+([ADR-019](docs/architecture_decisions.md#adr-019-test-only-ci-no-deploy-ci),
+[ADR-022](docs/architecture_decisions.md#adr-022-secret-dependency-and-image-scanning-in-test-only-ci),
+[ADR-025](docs/architecture_decisions.md#adr-025-codeql-sast-and-sboms-in-test-only-ci)).
+
+| Workflow | Checks | Result |
+|---|---|---|
+| `ci.yml` | `cargo test --workspace` and `cargo clippy -D warnings` | Fails the build |
+| `gitleaks.yml` | Secrets anywhere in git history | Fails the build |
+| `cargo_deny.yml` | RustSec advisories, licenses, banned and non-crates.io sources | Fails the build |
+| `trivy.yml` | Fixable HIGH/CRITICAL CVEs in all three images, including the crates in the shipped binaries (built with `cargo auditable`); also writes CycloneDX and SPDX SBOMs, uploaded as the `sboms` artifact | Fails the build on CVEs; SBOMs are informational |
+| `codeql.yml` | CodeQL static analysis of the Rust code and the workflow files | Reports to code scanning only |
+
 ## Notes
 
 - **Mail relay wire contract**: `POST /send` with
@@ -325,7 +341,7 @@ with that exact uid must exist before the dashboard renders.
 ## References
 
 - [`docs/spec.md`](docs/spec.md) — full design spec
-- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-015 through ADR-019
+- [`docs/architecture_decisions.md`](docs/architecture_decisions.md) — ADR-015 to ADR-020, ADR-022 and ADR-025 (numbers are shared with `spoke`)
 - [Anthropic Messages API](https://docs.claude.com/en/api/messages)
 - [SQLx](https://docs.rs/sqlx/latest/sqlx/)
 
