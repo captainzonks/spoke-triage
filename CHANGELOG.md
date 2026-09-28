@@ -22,7 +22,7 @@ follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html). What
 counts as a breaking change for a Spoke module is defined in the Spoke hub's
 ADR-029.
 
-## [0.4.0] - 2026-09-28
+## [0.4.0] - 2026-09-27
 
 ### Fixed
 
