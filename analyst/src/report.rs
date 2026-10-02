@@ -7,15 +7,15 @@
 //              defensively rather than assuming the wire never misbehaves.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-25
-// Version: 0.2.0
+// Modified: 2026-10-02
+// Version: 0.3.0
 // ==============================================================================
 
 use crate::anthropic::{ContentBlock, MessagesResponse};
 use crate::db::ScoredFinding;
 use crate::schema::TRIAGE_REPORT_TOOL_NAME;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct Report {
@@ -27,7 +27,7 @@ pub struct Report {
 
 #[derive(Debug, Deserialize)]
 pub struct RawFinding {
-    pub template_hash: String,
+    pub template_ref: String,
     pub severity: String,
     #[allow(dead_code)]
     pub service: String,
@@ -54,12 +54,12 @@ pub fn parse_report(response: &MessagesResponse) -> anyhow::Result<Report> {
     Ok(serde_json::from_value(input.clone())?)
 }
 
-/// A finding the model attributed to a template_hash that was not in the
-/// prompt — typically a mis-copied 64-char hex digest. Kept so the caller
-/// can log it and flag it in the report rather than drop it silently.
+/// A finding the model attributed to a template_ref that was not in the
+/// prompt. Kept so the caller can log it and flag it in the report rather
+/// than drop it silently.
 #[derive(Debug)]
 pub struct RejectedFinding {
-    pub template_hash: String,
+    pub template_ref: String,
     pub issue: String,
 }
 
@@ -69,33 +69,33 @@ pub struct ScoredFindings {
 }
 
 impl Report {
-    /// Splits findings by whether their template_hash (trimmed, lowercased)
-    /// is one of `sent_hashes`. strict:true validates the JSON shape, not
-    /// that the hash refers to real input; without this check one bad copy
-    /// violates finding_template_hash_fkey and aborts the whole run.
-    pub fn into_scored_findings(self, sent_hashes: &HashSet<String>) -> ScoredFindings {
-        let (kept, rejected): (Vec<_>, Vec<_>) = self
-            .findings
-            .into_iter()
-            .map(|f| RawFinding { template_hash: f.template_hash.trim().to_ascii_lowercase(), ..f })
-            .partition(|f| sent_hashes.contains(&f.template_hash));
-
-        ScoredFindings {
-            kept: kept
-                .into_iter()
-                .map(|f| ScoredFinding {
-                    template_hash: f.template_hash,
+    /// Resolves each finding's template_ref (see prompt::template_ref) to the
+    /// template_hash it stands for, using `refs` from prompt::template_ref_map.
+    /// strict:true validates the JSON shape, not that the ref was sent; an
+    /// unresolvable ref is rejected here instead of violating
+    /// finding_template_hash_fkey and aborting the whole run.
+    pub fn into_scored_findings(self, refs: &HashMap<String, String>) -> ScoredFindings {
+        let mut kept = Vec::new();
+        let mut rejected = Vec::new();
+        for f in self.findings {
+            match refs.get(&normalize_ref(&f.template_ref)) {
+                Some(hash) => kept.push(ScoredFinding {
+                    template_hash: hash.clone(),
                     severity: f.severity,
                     issue: f.issue,
                     recommendation: f.recommendation,
-                })
-                .collect(),
-            rejected: rejected
-                .into_iter()
-                .map(|f| RejectedFinding { template_hash: f.template_hash, issue: f.issue })
-                .collect(),
+                }),
+                None => rejected.push(RejectedFinding { template_ref: f.template_ref, issue: f.issue }),
+            }
         }
+        ScoredFindings { kept, rejected }
     }
+}
+
+/// "t12", " T12 " and a bare "12" all mean the template sent as "t12".
+fn normalize_ref(raw: &str) -> String {
+    let r = raw.trim().to_ascii_lowercase();
+    if !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()) { format!("t{r}") } else { r }
 }
 
 #[cfg(test)]
@@ -103,7 +103,6 @@ mod tests {
     use super::*;
     use crate::anthropic::Usage;
     use serde_json::json;
-    use std::collections::HashSet;
 
     #[test]
     fn parses_valid_tool_use_response() {
@@ -115,7 +114,7 @@ mod tests {
                     "total_events": 42,
                     "health": "degraded",
                     "findings": [{
-                        "template_hash": "a".repeat(64),
+                        "template_ref": "t1",
                         "severity": "HIGH",
                         "service": "plex",
                         "issue": "worker exited",
@@ -135,9 +134,9 @@ mod tests {
         assert_eq!(report.findings[0].severity, "HIGH");
     }
 
-    fn raw(hash: &str, issue: &str) -> RawFinding {
+    fn raw(template_ref: &str, issue: &str) -> RawFinding {
         RawFinding {
-            template_hash: hash.to_string(),
+            template_ref: template_ref.to_string(),
             severity: "HIGH".to_string(),
             service: "plex".to_string(),
             issue: issue.to_string(),
@@ -152,29 +151,41 @@ mod tests {
         Report { summary: String::new(), total_events: 0, health: "healthy".to_string(), findings }
     }
 
+    fn refs() -> HashMap<String, String> {
+        HashMap::from([("t1".to_string(), "a".repeat(64)), ("t2".to_string(), "b".repeat(64))])
+    }
+
     /// Run 23 (2026-09-23): the model cited a template_hash that was never in
     /// the prompt, the INSERT hit finding_template_hash_fkey and the whole run
-    /// died. An unknown hash must be rejected here, not reach Postgres.
+    /// died. An unknown ref must be rejected here, not reach Postgres.
     #[test]
-    fn drops_findings_whose_hash_was_not_sent() {
-        let known = HashSet::from(["a".repeat(64)]);
-        let split = report_with(vec![raw(&"a".repeat(64), "real"), raw(&"f".repeat(64), "hallucinated")])
-            .into_scored_findings(&known);
+    fn drops_findings_whose_ref_was_not_sent() {
+        let split = report_with(vec![raw("t2", "real"), raw("t99", "hallucinated")]).into_scored_findings(&refs());
 
         assert_eq!(split.kept.len(), 1);
         assert_eq!(split.kept[0].issue, "real");
+        assert_eq!(split.kept[0].template_hash, "b".repeat(64));
         assert_eq!(split.rejected.len(), 1);
-        assert_eq!(split.rejected[0].template_hash, "f".repeat(64));
+        assert_eq!(split.rejected[0].template_ref, "t99");
         assert_eq!(split.rejected[0].issue, "hallucinated");
     }
 
     #[test]
-    fn accepts_case_and_whitespace_variants_of_a_sent_hash() {
-        let known = HashSet::from(["ab".repeat(32)]);
-        let split = report_with(vec![raw(&format!(" {} ", "AB".repeat(32)), "shouted")]).into_scored_findings(&known);
+    fn accepts_case_whitespace_and_bare_number_variants_of_a_ref() {
+        let split = report_with(vec![raw(" T1 ", "shouted"), raw("2", "bare")]).into_scored_findings(&refs());
 
         assert!(split.rejected.is_empty());
-        assert_eq!(split.kept[0].template_hash, "ab".repeat(32));
+        assert_eq!(split.kept[0].template_hash, "a".repeat(64));
+        assert_eq!(split.kept[1].template_hash, "b".repeat(64));
+    }
+
+    /// Runs 38-39 (2026-10-01/02): full digests came back with an inserted
+    /// character or a half-invented tail. Hashes are no longer accepted at all.
+    #[test]
+    fn rejects_a_full_hash_in_place_of_a_ref() {
+        let split = report_with(vec![raw(&"a".repeat(64), "old style")]).into_scored_findings(&refs());
+        assert!(split.kept.is_empty());
+        assert_eq!(split.rejected.len(), 1);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //              asked of the model (spec §5).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-09
+// Modified: 2026-10-02
 // Version: 0.1.0
 // ==============================================================================
 
@@ -43,7 +43,7 @@ pub fn triage_report_tool() -> Value {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
-                            "template_hash",
+                            "template_ref",
                             "severity",
                             "service",
                             "issue",
@@ -53,9 +53,9 @@ pub fn triage_report_tool() -> Value {
                             "recommendation"
                         ],
                         "properties": {
-                            "template_hash": {
+                            "template_ref": {
                                 "type": "string",
-                                "description": "The template_hash this finding is about, copied verbatim from the input data."
+                                "description": "The template_ref this finding is about (for example \"t12\"), copied verbatim from the input data."
                             },
                             "severity": {
                                 "type": "string",
