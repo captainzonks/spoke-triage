@@ -7,7 +7,7 @@
 //              writes findings. Never receives raw log lines.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-27
+// Modified: 2026-10-02
 // Version: 0.2.2
 // ==============================================================================
 
@@ -26,7 +26,6 @@ use config::{Config, Secrets};
 use mail::{MailTransport, RelayTransport, SendRequest};
 use report_render::ReportContext;
 use sqlx::postgres::PgPoolOptions;
-use std::collections::HashSet;
 use std::time::Instant;
 
 #[tokio::main]
@@ -175,16 +174,16 @@ async fn main() -> anyhow::Result<()> {
             let health = report.health.clone();
             let total_events = report.total_events;
             let model_summary = report.summary.clone();
-            let sent_hashes: HashSet<String> = templates.iter().map(|t| t.template_hash.clone()).collect();
-            let scored = report.into_scored_findings(&sent_hashes);
+            let refs = prompt::template_ref_map(&templates);
+            let scored = report.into_scored_findings(&refs);
             for r in &scored.rejected {
-                eprintln!("dropped finding with unknown template_hash {:?}: {}", r.template_hash, r.issue);
+                eprintln!("dropped finding with unknown template_ref {:?}: {}", r.template_ref, r.issue);
             }
             let summary = if scored.rejected.is_empty() {
                 model_summary
             } else {
                 format!(
-                    "{model_summary}\n\nNote: {} finding(s) were dropped because the model cited a template_hash that was not in this run's input (see the triage journal).",
+                    "{model_summary}\n\nNote: {} finding(s) were dropped because the model cited a template_ref that was not in this run's input (see the triage journal).",
                     scored.rejected.len()
                 )
             };
@@ -334,7 +333,7 @@ mod tests {
                     "total_events": 5,
                     "health": "degraded",
                     "findings": [{
-                        "template_hash": "a".repeat(64),
+                        "template_ref": "t1",
                         "severity": "LOW",
                         "service": "plex",
                         "issue": "worker exited: \"worker 42 exited\"",
@@ -370,7 +369,8 @@ mod tests {
         assert_eq!(sent[0].tools.len(), 1);
         let body = serde_json::to_string(&sent[0]).unwrap();
         assert!(!body.contains("cache_control"), "request must not ask for prompt caching (ADR-027)");
-        assert!(sent[0].messages[0].content.contains(&"a".repeat(64)));
+        assert!(sent[0].messages[0].content.contains("\"template_ref\": \"t1\""));
+        assert!(!sent[0].messages[0].content.contains(&"a".repeat(64)), "full hashes stay out of the prompt");
     }
 
     #[tokio::test]

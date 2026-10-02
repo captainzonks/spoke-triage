@@ -13,13 +13,27 @@
 //              longer version of that reasoning.
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-09-25
-// Version: 0.2.0
+// Modified: 2026-10-02
+// Version: 0.3.0
 // ==============================================================================
 
 use crate::db::PendingTemplate;
 use chrono::{DateTime, Utc};
 use serde_json::json;
+use std::collections::HashMap;
+
+/// Short per-run reference for the template at `index` ("t1", "t2", ...).
+/// The model cites this instead of the 64-char template_hash: copying long
+/// hex digests is error-prone (runs 38-39 dropped findings over one inserted
+/// character and a half-invented digest), and the refs cost far fewer tokens.
+pub fn template_ref(index: usize) -> String {
+    format!("t{}", index + 1)
+}
+
+/// Maps each template_ref sent in this run's user message to its template_hash.
+pub fn template_ref_map(templates: &[PendingTemplate]) -> HashMap<String, String> {
+    templates.iter().enumerate().map(|(i, t)| (template_ref(i), t.template_hash.clone())).collect()
+}
 
 /// Verbatim from spoke_log_analysis.sh lines 229-253 / docs/spec.md §7, with
 /// the one adaptation the spec calls for: "raw log lines present below" ->
@@ -88,9 +102,10 @@ pub fn build_system_prompt(known_patterns: Option<&str>) -> String {
 pub fn build_user_message(templates: &[PendingTemplate], window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> String {
     let payload: Vec<_> = templates
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             json!({
-                "template_hash": t.template_hash,
+                "template_ref": template_ref(i),
                 "service": t.service_name,
                 "logger": t.logger,
                 "template": t.template_text,
@@ -149,5 +164,28 @@ mod tests {
         assert_eq!(payload[0]["count"], 7);
         assert_eq!(payload[0]["lifetime_count"], 9_999);
         assert_eq!(payload[0]["new_this_window"], true);
+        assert_eq!(payload[0]["template_ref"], "t1");
+        assert!(payload[0].get("template_hash").is_none(), "full hashes must not be sent to the model");
+    }
+
+    #[test]
+    fn ref_map_round_trips_each_template() {
+        let now = Utc::now();
+        let mk = |h: &str| PendingTemplate {
+            template_hash: h.to_string(),
+            service_name: String::new(),
+            logger: String::new(),
+            template_text: String::new(),
+            window_count: 1,
+            total_count: 1,
+            first_seen: now,
+            last_seen: now,
+            exemplar_lines: vec![],
+            verdict_classification: None,
+            verdict_note: None,
+        };
+        let map = template_ref_map(&[mk(&"a".repeat(64)), mk(&"b".repeat(64))]);
+        assert_eq!(map["t1"], "a".repeat(64));
+        assert_eq!(map["t2"], "b".repeat(64));
     }
 }

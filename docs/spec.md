@@ -199,6 +199,9 @@ recommendation) from the current script, plus the top-level summary,
 total_events, and health verdict. Add:
 
 - `template_hash` on every finding, joining back to the collector's data.
+  The model never copies the 64-char digest: each template is sent with a
+  short per-run `template_ref` (`t1`, `t2`, ...) and the analyst maps the
+  ref back to its hash (copied digests came back corrupted in runs 38-39).
 - `status: new | recurring | escalating | resolved` — **computed by the
   collector from history, never asked of the model.** The model classifies
   severity; the database decides novelty.
