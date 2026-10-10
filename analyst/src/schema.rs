@@ -7,7 +7,7 @@
 //              asked of the model (spec §5).
 // Author: Matt Barham
 // Created: 2026-09-09
-// Modified: 2026-10-02
+// Modified: 2026-10-10
 // Version: 0.1.0
 // ==============================================================================
 
@@ -55,7 +55,7 @@ pub fn triage_report_tool() -> Value {
                         "properties": {
                             "template_ref": {
                                 "type": "string",
-                                "description": "The template_ref this finding is about (for example \"t12\"), copied verbatim from the input data."
+                                "description": "The template_ref this finding is about (for example \"t12\"), copied verbatim from the input data. When one finding covers several templates with the same root cause, list them comma-separated or as a range (for example \"t3, t7-t9\"), most representative first."
                             },
                             "severity": {
                                 "type": "string",
