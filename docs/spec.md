@@ -10,8 +10,8 @@
 #              docs/architecture_decisions.md.
 # Author: Matt Barham
 # Created: 2026-09-08
-# Modified: 2026-09-27
-# Version: 0.3.2
+# Modified: 2026-10-10
+# Version: 0.3.3
 # ==============================================================================
 # Document Type: Spec
 # Audience: Implementers of spoke-triage; reviewers approving before code
@@ -202,6 +202,12 @@ total_events, and health verdict. Add:
   The model never copies the 64-char digest: each template is sent with a
   short per-run `template_ref` (`t1`, `t2`, ...) and the analyst maps the
   ref back to its hash (copied digests came back corrupted in runs 38-39).
+  When one finding covers several templates with the same root cause, the
+  model may cite a list or range (`"t3, t7-t9"`). A finding stores one
+  `template_hash`, so it attaches to the first cited ref that was sent and
+  the issue text names the others. Cited refs that were not sent are ignored
+  when at least one was; a finding with no sent ref is rejected and counted
+  in the report note.
 - `status: new | recurring | escalating | resolved` — **computed by the
   collector from history, never asked of the model.** The model classifies
   severity; the database decides novelty.
