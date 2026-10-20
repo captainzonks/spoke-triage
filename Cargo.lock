@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "spoke-triage-analyst"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "spoke-triage-cli"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "spoke-triage-common",
@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "spoke-triage-collector"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "spoke-triage-common"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "chrono",

@@ -7,8 +7,8 @@ CHANGELOG.md - Release history
 Description: Notable changes in each release, newest first
 Author: Matt Barham
 Created: 2026-09-27
-Modified: 2026-10-10
-Version: 0.4.2
+Modified: 2026-10-20
+Version: 0.4.3
 ==============================================================================
 Document Type: Changelog
 Audience: Operator, Module Developer
@@ -21,6 +21,12 @@ All notable changes to this project are documented here. The format follows
 follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html). What
 counts as a breaking change for a Spoke module is defined in the Spoke hub's
 ADR-029.
+
+## [0.4.3] - 2026-10-20
+
+### Fixed
+
+- deps: Bump rustls to 0.23.46 for RUSTSEC-2026-0346..0349 (#34)
 
 ## [0.4.2] - 2026-10-10
 
