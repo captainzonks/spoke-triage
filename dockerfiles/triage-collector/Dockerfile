@@ -8,10 +8,10 @@
 #              only the collector binary + migrations in the final image.
 # Author: Matt Barham
 # Created: 2026-09-10
-# Modified: 2026-09-27
-# Version: 0.2.0
+# Modified: 2026-10-20
+# Version: 0.2.1
 # ==============================================================================
-# Base Images: rust:1-slim (builder), alpine:latest (runtime)
+# Base Images: rust:1.99.1-slim (builder), alpine:latest (runtime)
 # Target Architecture: x86_64-unknown-linux-musl (static binary)
 # Security: non-root user, minimal Alpine runtime, no outbound network needed
 # ==============================================================================
@@ -20,7 +20,7 @@
 # BUILD STAGE
 #=============================================================================
 
-FROM rust:1-slim AS builder
+FROM rust:1.99.1-slim AS builder
 
 RUN apt update -qq && apt install -y -qq --no-install-recommends musl-tools pkg-config
 
