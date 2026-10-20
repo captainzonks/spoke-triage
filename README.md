@@ -282,7 +282,7 @@ accumulated.
 ## Custom builds
 
 Both `triage-collector` and `triage-analyst` are multi-stage Rust builds
-(`rust:1-slim` builder targeting `x86_64-unknown-linux-musl`, `alpine:latest`
+(`rust:1.99.1-slim` builder targeting `x86_64-unknown-linux-musl`, `alpine:latest`
 runtime, static binary, non-root). `triage-egress-guard` is plain Alpine +
 `iptables`/`bind-tools` running a POSIX shell entrypoint — no compiled app.
 Build with `docker compose build`.
